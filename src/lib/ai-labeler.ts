@@ -123,6 +123,79 @@ function uniqueTags(tags: TrackTag[]): TrackTag[] {
   return [...new Set(tags)].slice(0, 2);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function shouldUseResponsesFallback(status: number, body: string): boolean {
+  if (status !== 400) return false;
+  const normalized = body.toLowerCase();
+  return (
+    normalized.includes("unsupported legacy protocol") &&
+    normalized.includes("/v1/responses")
+  );
+}
+
+function toResponsesInput(messages: ChatMessage[]): Array<{ role: string; content: string }> {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
+}
+
+function extractResponsesOutputText(payload: unknown): string | null {
+  if (!isRecord(payload)) return null;
+
+  const directOutputText = payload.output_text;
+  if (typeof directOutputText === "string" && directOutputText.trim()) {
+    return directOutputText.trim();
+  }
+
+  const output = payload.output;
+  if (Array.isArray(output)) {
+    const chunks: string[] = [];
+
+    for (const item of output) {
+      if (!isRecord(item)) continue;
+
+      if (typeof item.text === "string" && item.text.trim()) {
+        chunks.push(item.text.trim());
+      }
+
+      const content = item.content;
+      if (!Array.isArray(content)) continue;
+
+      for (const part of content) {
+        if (!isRecord(part)) continue;
+
+        if (typeof part.text === "string" && part.text.trim()) {
+          chunks.push(part.text.trim());
+          continue;
+        }
+
+        if (isRecord(part.text) && typeof part.text.value === "string" && part.text.value.trim()) {
+          chunks.push(part.text.value.trim());
+          continue;
+        }
+
+        if (typeof part.output_text === "string" && part.output_text.trim()) {
+          chunks.push(part.output_text.trim());
+        }
+      }
+    }
+
+    if (chunks.length > 0) {
+      return chunks.join("\n");
+    }
+  }
+
+  if (isRecord(payload.response)) {
+    return extractResponsesOutputText(payload.response);
+  }
+
+  return null;
+}
+
 function getAiConfig(task: AiTask, options: AiCompletionOptions, deps: AiCompletionDeps) {
   const modelEnv = task === "track" ? process.env.AI_TRACK_MODEL : process.env.AI_STYLE_MODEL;
   const timeoutEnv =
@@ -178,7 +251,8 @@ export async function runAiChatCompletion(
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+      const chatUrl = `${baseUrl}/chat/completions`;
+      const response = await fetchImpl(chatUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -194,10 +268,49 @@ export async function runAiChatCompletion(
       });
 
       if (!response.ok) {
-        throw new AiRequestError(
-          `AI API error ${response.status}: ${await response.text()}`,
-          response.status
-        );
+        const errorBody = await response.text();
+
+        if (shouldUseResponsesFallback(response.status, errorBody)) {
+          const responsesUrl = `${baseUrl}/responses`;
+          const responsesResponse = await fetchImpl(responsesUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
+            signal: controller.signal,
+            body: JSON.stringify({
+              model,
+              input: toResponsesInput(messages),
+              temperature: 0.2,
+              max_output_tokens: 4096,
+            }),
+          });
+
+          if (!responsesResponse.ok) {
+            throw new AiRequestError(
+              `AI API error ${responsesResponse.status}: ${await responsesResponse.text()}`,
+              responsesResponse.status
+            );
+          }
+
+          const responsesPayload = (await responsesResponse.json()) as unknown;
+          const responsesContent = extractResponsesOutputText(responsesPayload);
+          if (!responsesContent) {
+            throw new Error("AI response missing message content");
+          }
+
+          logger.info("AI request completed", {
+            task: options.task,
+            attempt,
+            durationMs: Date.now() - startedAt,
+            model,
+            protocol: "responses",
+          });
+          return responsesContent;
+        }
+
+        throw new AiRequestError(`AI API error ${response.status}: ${errorBody}`, response.status);
       }
 
       const payload = (await response.json()) as {
@@ -213,6 +326,7 @@ export async function runAiChatCompletion(
         attempt,
         durationMs: Date.now() - startedAt,
         model,
+        protocol: "chat",
       });
       return content;
     } catch (error) {
