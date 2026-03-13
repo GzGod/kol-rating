@@ -1,5 +1,36 @@
 const RAPIDAPI_HOST = "twitter241.p.rapidapi.com";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function findUserResult(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+
+  const queue: Record<string, unknown>[] = [value];
+  const visited = new Set<Record<string, unknown>>();
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    const legacy = current.legacy;
+    const restId = current.rest_id;
+    if (isRecord(legacy) && (typeof restId === "string" || typeof legacy.screen_name === "string")) {
+      return current;
+    }
+
+    for (const nested of Object.values(current)) {
+      if (isRecord(nested)) {
+        queue.push(nested);
+      }
+    }
+  }
+
+  return null;
+}
+
 function getHeaders(): Record<string, string> {
   const key = process.env.RAPIDAPI_KEY;
   if (!key) throw new Error("RAPIDAPI_KEY not set");
@@ -40,11 +71,8 @@ export interface TwitterTweet {
 
 // --- Helper: extract user from RapidAPI response ---
 function extractUser(result: Record<string, unknown>): TwitterUser {
-  // twitter241 returns nested Twitter GraphQL format
-  // result.result.legacy has the user data
-  const r = result as Record<string, unknown>;
-  const userResult = (r.result || r) as Record<string, unknown>;
-  const legacy = userResult.legacy as Record<string, unknown> || {};
+  const userResult = findUserResult(result) || result;
+  const legacy = (isRecord(userResult.legacy) ? userResult.legacy : {}) as Record<string, unknown>;
   const restId = (userResult.rest_id || legacy.id_str || "") as string;
 
   return {
@@ -119,16 +147,21 @@ export async function lookupUser(username: string): Promise<TwitterUser> {
     throw new Error(`Twitter241 API error ${res.status}: ${body}`);
   }
   const json = await res.json();
-
-  // twitter241 returns { result: { ... } } or { data: { user: { result: { ... } } } }
-  const userObj = json.result || json.data?.user?.result || json;
-  return extractUser(userObj);
+  const user = extractUser(json);
+  if (!user.id || !user.username) {
+    throw new Error(`Twitter241 user payload missing id/username for @${username}`);
+  }
+  return user;
 }
 
 export async function getUserTweets(
   userId: string,
   maxResults = 100
 ): Promise<TwitterTweet[]> {
+  if (!userId.trim()) {
+    throw new Error("Twitter241 userId is empty");
+  }
+
   const tweets: TwitterTweet[] = [];
   let cursor: string | undefined;
 
