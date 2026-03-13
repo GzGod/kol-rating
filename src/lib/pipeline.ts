@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { lookupUser, getUserTweets } from "@/lib/twitter";
-import { labelTweetTracks, labelKolStyle } from "@/lib/ai-labeler";
+import { labelKolSignals } from "@/lib/ai-labeler";
 import { calculatePowerScore } from "@/lib/score/calculator";
 
 /** Full pipeline: fetch Twitter data → AI label → calculate score */
@@ -61,47 +61,48 @@ export async function processKol(kolId: string) {
     });
   }
 
-  // 3. AI label tweets (only original, non-labeled ones)
-  const unlabeledTweets = await prisma.tweet.findMany({
-    where: { kolId, trackTags: { isEmpty: true }, isRetweet: false },
-    select: { id: true, tweetId: true, text: true },
-    take: 100,
+  // 3. AI label tweets and style in parallel once fresh tweets are persisted.
+  const [unlabeledTweets, recentTweets] = await Promise.all([
+    prisma.tweet.findMany({
+      where: { kolId, trackTags: { isEmpty: true }, isRetweet: false },
+      select: { id: true, tweetId: true, text: true },
+      take: 100,
+    }),
+    prisma.tweet.findMany({
+      where: { kolId, isRetweet: false },
+      select: { tweetId: true, text: true },
+      orderBy: { publishedAt: "desc" },
+      take: 30,
+    }),
+  ]);
+
+  const { trackLabels, style } = await labelKolSignals({
+    trackTweets: unlabeledTweets.map((tweet) => ({ id: tweet.tweetId, text: tweet.text })),
+    styleTweets: recentTweets.map((tweet) => ({ id: tweet.tweetId, text: tweet.text })),
   });
 
-  if (unlabeledTweets.length > 0) {
-    const labels = await labelTweetTracks(
-      unlabeledTweets.map((t) => ({ id: t.tweetId, text: t.text }))
-    );
-
-    for (const label of labels) {
-      await prisma.tweet.updateMany({
-        where: { tweetId: label.id },
-        data: { trackTags: label.tags },
-      });
-    }
-  }
-
-  // 4. AI style label
-  const recentTweets = await prisma.tweet.findMany({
-    where: { kolId, isRetweet: false },
-    select: { tweetId: true, text: true },
-    orderBy: { publishedAt: "desc" },
-    take: 30,
-  });
-
-  if (recentTweets.length > 0) {
-    const style = await labelKolStyle(
-      recentTweets.map((t) => ({ id: t.tweetId, text: t.text }))
-    );
-    await prisma.kol.update({
-      where: { id: kolId },
-      data: {
-        primaryStyle: style.primary_style,
-        secondaryStyle: style.secondary_style || null,
-        styleReasoning: style.reasoning,
-      },
-    });
-  }
+  await Promise.all([
+    trackLabels.length > 0
+      ? Promise.all(
+          trackLabels.map((label) =>
+            prisma.tweet.updateMany({
+              where: { tweetId: label.id },
+              data: { trackTags: label.tags },
+            })
+          )
+        )
+      : Promise.resolve(),
+    recentTweets.length > 0
+      ? prisma.kol.update({
+          where: { id: kolId },
+          data: {
+            primaryStyle: style.primary_style,
+            secondaryStyle: style.secondary_style || null,
+            styleReasoning: style.reasoning,
+          },
+        })
+      : Promise.resolve(),
+  ]);
 
   // 5. Calculate Power Score
   const result = await calculatePowerScore(kolId);

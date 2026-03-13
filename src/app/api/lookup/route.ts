@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { labelKolStyle, labelTweetTracks } from "@/lib/ai-labeler";
+import { labelKolSignals } from "@/lib/ai-labeler";
 import type { LookupKol, LookupResponse } from "@/lib/lookup-types";
 import { resolveHandleLookup, normalizeHandle } from "@/lib/lookup-service";
 import { processKol } from "@/lib/pipeline";
@@ -152,16 +152,10 @@ async function loadTransientLookup(handle: string): Promise<LookupResponse> {
   const originalTweets = tweets.filter(
     (tweet) => !tweet.referenced_tweets?.some((ref) => ref.type === "retweeted")
   );
-
-  const trackLabels =
-    originalTweets.length > 0
-      ? await labelTweetTracks(originalTweets.map((tweet) => ({ id: tweet.id, text: tweet.text })))
-      : [];
-
-  const style =
-    originalTweets.length > 0
-      ? await labelKolStyle(originalTweets.slice(0, 30).map((tweet) => ({ id: tweet.id, text: tweet.text })))
-      : { primary_style: "Analyst" as const };
+  const { trackLabels, style } = await labelKolSignals({
+    trackTweets: originalTweets.map((tweet) => ({ id: tweet.id, text: tweet.text })),
+    styleTweets: originalTweets.slice(0, 30).map((tweet) => ({ id: tweet.id, text: tweet.text })),
+  });
 
   return buildTransientLookupResult({
     user,
