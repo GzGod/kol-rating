@@ -31,6 +31,20 @@ function findUserResult(value: unknown): Record<string, unknown> | null {
   return null;
 }
 
+function getTopLevelKeys(value: unknown): string[] {
+  return isRecord(value) ? Object.keys(value).slice(0, 20) : [];
+}
+
+function getPayloadSnippet(value: unknown, maxLength = 1200): string {
+  try {
+    const serialized = JSON.stringify(value);
+    if (!serialized) return "";
+    return serialized.length > maxLength ? `${serialized.slice(0, maxLength)}...` : serialized;
+  } catch {
+    return "[unserializable payload]";
+  }
+}
+
 function getHeaders(): Record<string, string> {
   const key = process.env.RAPIDAPI_KEY;
   if (!key) throw new Error("RAPIDAPI_KEY not set");
@@ -144,11 +158,21 @@ export async function lookupUser(username: string): Promise<TwitterUser> {
   const res = await fetch(url, { headers: getHeaders() });
   if (!res.ok) {
     const body = await res.text();
+    console.error("Twitter241 user request failed", {
+      username,
+      status: res.status,
+      bodySnippet: body.length > 1200 ? `${body.slice(0, 1200)}...` : body,
+    });
     throw new Error(`Twitter241 API error ${res.status}: ${body}`);
   }
   const json = await res.json();
   const user = extractUser(json);
   if (!user.id || !user.username) {
+    console.error("Twitter241 unexpected user payload", {
+      username,
+      topLevelKeys: getTopLevelKeys(json),
+      payloadSnippet: getPayloadSnippet(json),
+    });
     throw new Error(`Twitter241 user payload missing id/username for @${username}`);
   }
   return user;

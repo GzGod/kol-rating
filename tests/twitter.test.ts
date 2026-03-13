@@ -54,3 +54,53 @@ test("lookupUser extracts rest_id from nested user_results structure", async () 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("lookupUser logs payload summary when twitter241 returns unusable user data", async () => {
+  let mod: {
+    lookupUser: (username: string) => Promise<{ id: string; username: string; name: string }>;
+  };
+
+  try {
+    mod = await import("../src/lib/twitter");
+  } catch {
+    assert.fail("twitter module missing");
+  }
+
+  const originalFetch = globalThis.fetch;
+  const originalConsoleError = console.error;
+  const errorCalls: unknown[][] = [];
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        user: {
+          result: {
+            note: "unexpected shape",
+          },
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    ) as Response;
+  console.error = (...args: unknown[]) => {
+    errorCalls.push(args);
+  };
+
+  process.env.RAPIDAPI_KEY = "test-key";
+
+  try {
+    await assert.rejects(
+      () => mod.lookupUser("xuegaogx"),
+      /Twitter241 user payload missing id\/username for @xuegaogx/
+    );
+    assert.equal(errorCalls.length, 1);
+    assert.equal(errorCalls[0][0], "Twitter241 unexpected user payload");
+    assert.deepEqual(errorCalls[0][1], {
+      username: "xuegaogx",
+      topLevelKeys: ["user"],
+      payloadSnippet: '{"user":{"result":{"note":"unexpected shape"}}}',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalConsoleError;
+  }
+});
