@@ -15,6 +15,10 @@ interface TweetMetrics {
   impressionCount: number;
 }
 
+function getEfficiencyCoefficient(avgImpressions: number): number {
+  return 2.2 + (9.8 * avgImpressions) / (avgImpressions + 30000);
+}
+
 export function calculateEngagement(tweets: TweetMetrics[]): EngagementResult {
   if (tweets.length === 0) {
     return { score: 0, scaleScore: 0, efficiencyScore: 0, avgImpressions: 0, avgEngagement: 0, engagementRate: 0 };
@@ -36,9 +40,10 @@ export function calculateEngagement(tweets: TweetMetrics[]): EngagementResult {
   // Scale score: Max(0, Min(100, 8.5 × ln(Avg_Impressions + 1) - 20))
   const scaleScore = Math.max(0, Math.min(100, 8.5 * Math.log(avgImpressions + 1) - 20));
 
-  // Efficiency score: engagement rate per 1000 impressions × 2.2
+  // Efficiency score: engagement rate per 1000 impressions × impression-aware coefficient
   const engagementRate = avgImpressions > 0 ? (avgEngagement / avgImpressions) * 1000 : 0;
-  const efficiencyScore = Math.min(100, engagementRate * 2.2);
+  const efficiencyCoefficient = getEfficiencyCoefficient(avgImpressions);
+  const efficiencyScore = Math.min(100, engagementRate * efficiencyCoefficient);
 
   const score = scaleScore * 0.5 + efficiencyScore * 0.5;
 

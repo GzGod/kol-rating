@@ -4,7 +4,7 @@ import type {
   XHuntLookupSummary,
 } from "@/lib/lookup-types";
 
-const XHUNT_PUBLIC_PREFIX = "https://kb.cryptohunt.ai/api/xhunt/proxy/public";
+const XCLAW_API_BASE = "https://pro.xclaw.info";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -34,9 +34,6 @@ function getBodySnippet(body: string, maxLength = 400): string {
 }
 
 export function parseXHuntRankPayload(payload: unknown, username: string): number | null {
-  const normalizedUsername = normalizeUsername(username);
-  if (!normalizedUsername) return null;
-
   const queue: unknown[] = [payload];
   const visited = new Set<object>();
 
@@ -51,11 +48,17 @@ export function parseXHuntRankPayload(payload: unknown, username: string): numbe
     if (visited.has(current)) continue;
     visited.add(current);
 
+    const directCnRank = parsePositiveRank(current.kolCnRank);
+    if (directCnRank !== null) {
+      return directCnRank;
+    }
+
+    const normalizedUsername = normalizeUsername(username);
     const currentUsername =
       typeof current.username === "string" ? normalizeUsername(current.username) : "";
-    const currentRank = parsePositiveRank(current.kolRank);
+    const currentRank = parsePositiveRank(current.kolCnRank);
 
-    if (currentUsername === normalizedUsername && currentRank !== null) {
+    if (normalizedUsername && currentUsername === normalizedUsername && currentRank !== null) {
       return currentRank;
     }
 
@@ -85,27 +88,39 @@ export async function fetchXHuntRank(
     };
   }
 
-  const url = `${XHUNT_PUBLIC_PREFIX}/fetch/twitter/rank?usernames=${encodeURIComponent(
-    normalizedUsername
-  )}&target=k8s_kota`;
+  const apiKey = process.env.XCLAW_API_KEY?.trim();
+  if (!apiKey) {
+    return {
+      rank: null,
+      available: false,
+      blocked: false,
+      status: "unavailable",
+      source: "live",
+      note: "XClaw API key missing",
+    };
+  }
+
+  const url = `${XCLAW_API_BASE}/data/rank`;
 
   try {
     const response = await fetchImpl(url, {
+      method: "POST",
       headers: {
         accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "X-API-KEY": apiKey,
       },
+      body: JSON.stringify({
+        handle: normalizedUsername,
+      }),
     });
 
     const body = await response.text();
     const contentType = response.headers.get("content-type") || "";
     const responseUrl = response.url || url;
-    const blocked =
-      responseUrl.includes("/blocked_xhunt") ||
-      body.includes("/blocked_xhunt") ||
-      (contentType.includes("text/html") && body.includes("<html"));
 
     if (!response.ok) {
-      console.error("XHunt rank request failed", {
+      console.error("XClaw rank request failed", {
         username: normalizedUsername,
         status: response.status,
         responseUrl,
@@ -115,27 +130,10 @@ export async function fetchXHuntRank(
       return {
         rank: null,
         available: false,
-        blocked,
-        status: blocked ? "blocked" : "unavailable",
+        blocked: false,
+        status: "unavailable",
         source: "live",
-        note: blocked ? "当前服务环境被 XHunt 限制" : `XHunt returned ${response.status}`,
-      };
-    }
-
-    if (blocked) {
-      console.error("XHunt rank request blocked", {
-        username: normalizedUsername,
-        responseUrl,
-        bodySnippet: getBodySnippet(body),
-      });
-
-      return {
-        rank: null,
-        available: false,
-        blocked: true,
-        status: "blocked",
-        source: "live",
-        note: "当前服务环境被 XHunt 限制",
+        note: `XClaw returned ${response.status}`,
       };
     }
 
@@ -143,7 +141,7 @@ export async function fetchXHuntRank(
     try {
       payload = JSON.parse(body);
     } catch {
-      console.error("XHunt rank payload was not JSON", {
+      console.error("XClaw rank payload was not JSON", {
         username: normalizedUsername,
         responseUrl,
         contentType,
@@ -156,7 +154,7 @@ export async function fetchXHuntRank(
         blocked: false,
         status: "unavailable",
         source: "live",
-        note: "XHunt 返回了非 JSON 数据",
+        note: "XClaw 返回了非 JSON 数据",
       };
     }
 
@@ -167,10 +165,10 @@ export async function fetchXHuntRank(
       blocked: false,
       status: rank === null ? "unranked" : "ok",
       source: "live",
-      note: rank === null ? "XHunt 暂无该账号排名" : null,
+      note: rank === null ? "XClaw 暂无该账号中文社区排名" : null,
     };
   } catch (error: unknown) {
-    console.error("XHunt rank request failed", {
+    console.error("XClaw rank request failed", {
       username: normalizedUsername,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -181,7 +179,7 @@ export async function fetchXHuntRank(
       blocked: false,
       status: "unavailable",
       source: "live",
-      note: "XHunt 请求失败",
+      note: "XClaw 请求失败",
     };
   }
 }

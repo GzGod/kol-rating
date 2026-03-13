@@ -5,7 +5,7 @@ function weeksAgo(weeks: number): Date {
   return new Date(Date.now() - weeks * 7 * 24 * 60 * 60 * 1000);
 }
 
-test("calculateEngagement uses the calibrated scale and efficiency formulas", async () => {
+test("calculateEngagement uses the calibrated scale formula and smooth efficiency coefficient", async () => {
   const mod = await import("../src/lib/score/engagement");
 
   const result = mod.calculateEngagement([
@@ -21,8 +21,47 @@ test("calculateEngagement uses the calibrated scale and efficiency formulas", as
   assert.equal(result.avgImpressions, 5000);
   assert.equal(result.engagementRate, 20);
   assert.equal(result.scaleScore, 52.4);
-  assert.equal(result.efficiencyScore, 44);
-  assert.equal(result.score, 48.2);
+  assert.equal(result.efficiencyScore, 72);
+  assert.equal(result.score, 62.2);
+});
+
+test("calculateEngagement raises efficiency expectations smoothly with higher impression tiers", async () => {
+  const mod = await import("../src/lib/score/engagement");
+
+  const low = mod.calculateEngagement([
+    {
+      likeCount: 8,
+      retweetCount: 0,
+      replyCount: 1,
+      quoteCount: 0,
+      impressionCount: 1500,
+    },
+  ]);
+  const mid = mod.calculateEngagement([
+    {
+      likeCount: 180,
+      retweetCount: 20,
+      replyCount: 10,
+      quoteCount: 4,
+      impressionCount: 30000,
+    },
+  ]);
+  const high = mod.calculateEngagement([
+    {
+      likeCount: 200,
+      retweetCount: 0,
+      replyCount: 0,
+      quoteCount: 0,
+      impressionCount: 200000,
+    },
+  ]);
+
+  assert.equal(low.engagementRate, 8);
+  assert.equal(low.efficiencyScore, 21.3);
+  assert.equal(mid.engagementRate, 10);
+  assert.equal(mid.efficiencyScore, 71);
+  assert.equal(high.engagementRate, 1);
+  assert.equal(high.efficiencyScore, 10.7);
 });
 
 test("calculateExpertise maps posting stability with the new step function", async () => {

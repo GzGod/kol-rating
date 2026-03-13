@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-test("parseXHuntRankPayload extracts rank from nested XHunt response", async () => {
+test("parseXHuntRankPayload prefers Chinese community rank from official XClaw response", async () => {
   let mod: {
     parseXHuntRankPayload: (payload: unknown, username: string) => number | null;
   };
@@ -14,21 +14,17 @@ test("parseXHuntRankPayload extracts rank from nested XHunt response", async () 
 
   const rank = mod.parseXHuntRankPayload(
     {
-      success: true,
-      data: {
-        data: [
-          { username: "MrBeast", kolRank: 16 },
-          { username: "xuegaogx", kolRank: 428 },
-        ],
-      },
+      kolCnRank: 128,
+      kolGlobalRank: 2048,
+      kolRank: 32,
     },
     "xuegaogx"
   );
 
-  assert.equal(rank, 428);
+  assert.equal(rank, 128);
 });
 
-test("fetchXHuntRank returns unavailable when XHunt responds with blocked HTML", async () => {
+test("fetchXHuntRank calls the official XClaw rank endpoint with API key auth", async () => {
   let mod: {
     fetchXHuntRank: (
       username: string,
@@ -42,19 +38,79 @@ test("fetchXHuntRank returns unavailable when XHunt responds with blocked HTML",
     assert.fail("xhunt module missing");
   }
 
-  const result = await mod.fetchXHuntRank(
-    "xuegaogx",
-    async () =>
-      new Response("<!DOCTYPE html><html><body>blocked</body></html>", {
-        status: 200,
-        headers: { "Content-Type": "text/html" },
-      }) as Response
-  );
+  const previousApiKey = process.env.XCLAW_API_KEY;
+  process.env.XCLAW_API_KEY = "test-xclaw-key";
 
-  assert.equal(result.available, false);
-  assert.equal(result.blocked, true);
-  assert.equal(result.rank, null);
-  assert.equal(result.status, "blocked");
+  let requestUrl = "";
+  let requestInit: RequestInit | undefined;
+
+  try {
+    const result = await mod.fetchXHuntRank(
+      "xuegaogx",
+      async (input, init) => {
+        requestUrl = typeof input === "string" ? input : input.toString();
+        requestInit = init;
+        return new Response(JSON.stringify({ kolCnRank: 428, kolRank: 22 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }) as Response;
+      }
+    );
+
+    assert.equal(requestUrl, "https://pro.xclaw.info/data/rank");
+    assert.equal(requestInit?.method, "POST");
+    assert.equal((requestInit?.headers as Record<string, string>)["X-API-KEY"], "test-xclaw-key");
+    assert.equal((requestInit?.headers as Record<string, string>)["Content-Type"], "application/json");
+    assert.deepEqual(JSON.parse(String(requestInit?.body)), { handle: "xuegaogx" });
+    assert.equal(result.available, true);
+    assert.equal(result.rank, 428);
+    assert.equal(result.status, "ok");
+  } finally {
+    if (previousApiKey === undefined) {
+      delete process.env.XCLAW_API_KEY;
+    } else {
+      process.env.XCLAW_API_KEY = previousApiKey;
+    }
+  }
+});
+
+test("fetchXHuntRank returns unavailable without an official XClaw API key", async () => {
+  let mod: {
+    fetchXHuntRank: (
+      username: string,
+      fetchImpl?: typeof fetch
+    ) => Promise<{ available: boolean; blocked: boolean; rank: number | null; status: string; note: string | null }>;
+  };
+
+  try {
+    mod = await import("../src/lib/xhunt");
+  } catch {
+    assert.fail("xhunt module missing");
+  }
+
+  const previousApiKey = process.env.XCLAW_API_KEY;
+  delete process.env.XCLAW_API_KEY;
+
+  let fetchCalled = false;
+
+  try {
+    const result = await mod.fetchXHuntRank("xuegaogx", async () => {
+      fetchCalled = true;
+      throw new Error("fetch should not run without API key");
+    });
+
+    assert.equal(fetchCalled, false);
+    assert.equal(result.available, false);
+    assert.equal(result.rank, null);
+    assert.equal(result.status, "unavailable");
+    assert.equal(result.note, "XClaw API key missing");
+  } finally {
+    if (previousApiKey === undefined) {
+      delete process.env.XCLAW_API_KEY;
+    } else {
+      process.env.XCLAW_API_KEY = previousApiKey;
+    }
+  }
 });
 
 test("evaluateCrossValidation returns certified for high rank and high current power", async () => {
