@@ -6,6 +6,7 @@ import { processKol } from "@/lib/pipeline";
 import { prisma } from "@/lib/prisma";
 import { buildTransientLookupResult } from "@/lib/transient-lookup";
 import { getUserTweets, lookupUser } from "@/lib/twitter";
+import { enrichLookupWithXHunt, fetchXHuntRank } from "@/lib/xhunt";
 
 export const maxDuration = 60;
 
@@ -183,7 +184,8 @@ export async function POST(request: NextRequest) {
       loadPersisted: loadPersistedLookup,
       loadTransient: loadTransientLookup,
     });
-    return NextResponse.json(result);
+    const xhunt = await fetchXHuntRank(result.kol?.username || handle);
+    return NextResponse.json(enrichLookupWithXHunt(result, xhunt));
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("Lookup error:", message);

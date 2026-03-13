@@ -4,45 +4,51 @@ import { useState } from "react";
 import Image from "next/image";
 import { ScoreBadge, ScoreBar } from "@/components/ScoreBadge";
 import { ScoreBreakdown } from "@/components/ScoreBreakdown";
+import type { LookupResponse } from "@/lib/lookup-types";
 import { TRACK_LABELS, STYLE_LABELS, formatNumber, TIER_CONFIG } from "@/lib/utils";
 
-interface KolResult {
-  kol: {
-    id: string;
-    username: string;
-    displayName: string;
-    avatarUrl: string | null;
-    bio: string | null;
-    followerCount: number;
-    followingCount: number;
-    tweetCount: number;
-    powerScore: number;
-    engagementScore: number;
-    expertiseScore: number;
-    healthScore: number;
-    tier: string;
-    primaryTrack: string | null;
-    secondaryTrack: string | null;
-    primaryStyle: string | null;
-    secondaryStyle: string | null;
-    tweets: { tweetId: string; text: string; trackTags: string[]; likeCount: number; retweetCount: number; replyCount: number; impressionCount: number; isRetweet: boolean }[];
-  };
-  score?: {
-    powerScore: number;
-    tier: string;
-    engagement: { score: number; scaleScore: number; efficiencyScore: number; avgImpressions: number; avgEngagement: number; engagementRate: number };
-    expertise: { score: number; trackFocus: number; originality: number; postingStability: number; topTrack: string; trackDistribution: Record<string, number> };
-    health: { score: number; reachAuthenticity: number; growthHealth: number; anomalyScore: number; anomalyFlags: string[] };
-  };
-  trackDistribution: { tag: string; count: number }[];
-  cached: boolean;
+const CROSS_VALIDATION_STYLE: Record<
+  string,
+  { badge: string; panel: string; accent: string }
+> = {
+  certified: {
+    badge: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/20",
+    panel: "bg-emerald-500/10 border border-emerald-500/20",
+    accent: "text-emerald-300",
+  },
+  legacy_slipping: {
+    badge: "bg-amber-500/15 text-amber-300 border border-amber-500/20",
+    panel: "bg-amber-500/10 border border-amber-500/20",
+    accent: "text-amber-300",
+  },
+  rising_star: {
+    badge: "bg-cyan-500/15 text-cyan-300 border border-cyan-500/20",
+    panel: "bg-cyan-500/10 border border-cyan-500/20",
+    accent: "text-cyan-300",
+  },
+  normal: {
+    badge: "bg-white/10 text-white/70 border border-white/10",
+    panel: "bg-white/5 border border-white/10",
+    accent: "text-white/80",
+  },
+  unavailable: {
+    badge: "bg-rose-500/15 text-rose-300 border border-rose-500/20",
+    panel: "bg-rose-500/10 border border-rose-500/20",
+    accent: "text-rose-300",
+  },
+};
+
+function formatXHuntRank(rank: number | null, available: boolean): string {
+  if (!available) return "暂不可用";
+  if (rank === null) return "未上榜";
+  return `#${rank}`;
 }
 
 export default function Home() {
   const [handle, setHandle] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<KolResult | null>(null);
+  const [result, setResult] = useState<LookupResponse | null>(null);
 
   async function lookup(e: React.FormEvent) {
     e.preventDefault();
@@ -74,6 +80,9 @@ export default function Home() {
   const kol = result?.kol;
   const score = result?.score;
   const tierConfig = kol ? (TIER_CONFIG[kol.tier] || TIER_CONFIG.D) : null;
+  const validationStyle = result?.crossValidation
+    ? CROSS_VALIDATION_STYLE[result.crossValidation.status]
+    : null;
 
   return (
     <div className="min-h-screen">
@@ -187,6 +196,54 @@ export default function Home() {
                 )}
               </div>
             </div>
+
+            {/* XHunt Cross Validation */}
+            {result?.xhunt && result.crossValidation && validationStyle && (
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <h3 className="font-medium">XHunt 交叉验证</h3>
+                    <p className="text-sm text-white/50 mt-1">{result.crossValidation.summary}</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap md:justify-end">
+                    <span className={`px-3 py-1 text-xs rounded-full ${validationStyle.badge}`}>
+                      {result.crossValidation.label}
+                    </span>
+                    {result.crossValidation.subLabel && (
+                      <span className="px-3 py-1 text-xs rounded-full bg-white/5 text-white/60 border border-white/10">
+                        {result.crossValidation.subLabel}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2 mt-4">
+                  <div className="rounded-xl bg-white/4 border border-white/8 p-4">
+                    <div className="text-xs text-white/40">历史地位</div>
+                    <div className={`text-2xl font-semibold mt-1 ${validationStyle.accent}`}>
+                      {formatXHuntRank(result.xhunt.rank, result.xhunt.available)}
+                    </div>
+                    <div className="text-xs text-white/35 mt-1">
+                      {result.xhunt.note || "来自 XHunt 长期排名"}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-white/4 border border-white/8 p-4">
+                    <div className="text-xs text-white/40">当前状态</div>
+                    <div className="text-2xl font-semibold mt-1">
+                      {kol.tier} / {Math.round(kol.powerScore)}
+                    </div>
+                    <div className="text-xs text-white/35 mt-1">
+                      Power Score 基于最近推文、互动率和账户健康度
+                    </div>
+                  </div>
+                </div>
+
+                <div className={`mt-4 rounded-xl px-4 py-3 text-sm text-white/80 ${validationStyle.panel}`}>
+                  {result.crossValidation.operatorHint}
+                </div>
+              </div>
+            )}
 
             {/* Score Breakdown */}
             {score && (

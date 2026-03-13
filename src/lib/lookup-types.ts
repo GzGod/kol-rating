@@ -1,5 +1,22 @@
 import type { ScoreBreakdown } from "@/lib/score/types";
 
+export interface XHuntLookupSummary {
+  rank: number | null;
+  available: boolean;
+  blocked: boolean;
+  status: "ok" | "unranked" | "blocked" | "unavailable";
+  source: "live";
+  note: string | null;
+}
+
+export interface CrossValidationVerdict {
+  status: "certified" | "legacy_slipping" | "rising_star" | "normal" | "unavailable";
+  label: string;
+  subLabel: string | null;
+  summary: string;
+  operatorHint: string;
+}
+
 export interface LookupTweet {
   tweetId: string;
   text: string;
@@ -38,4 +55,6 @@ export interface LookupResponse {
   trackDistribution: Array<{ tag: string; count: number }>;
   cached: boolean;
   persisted?: boolean;
+  xhunt?: XHuntLookupSummary;
+  crossValidation?: CrossValidationVerdict | null;
 }
