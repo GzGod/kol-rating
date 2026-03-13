@@ -33,6 +33,50 @@ function getBodySnippet(body: string, maxLength = 400): string {
   return body.length > maxLength ? `${body.slice(0, maxLength)}...` : body;
 }
 
+function parseXClawFailureMessage(payload: unknown): string | null {
+  const queue: unknown[] = [payload];
+  const visited = new Set<object>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+
+    if (!isRecord(current)) continue;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    const isFailedStatus = current.status === false;
+    const isErrorPayload = current.error === true;
+    if (isFailedStatus || isErrorPayload) {
+      const messageCandidates = [
+        current.msg,
+        current.message,
+        current.error_msg,
+        current.errorMessage,
+      ];
+
+      for (const message of messageCandidates) {
+        if (typeof message === "string" && message.trim()) {
+          return message.trim();
+        }
+      }
+
+      return "XClaw request rejected";
+    }
+
+    for (const nested of Object.values(current)) {
+      if (typeof nested === "object" && nested !== null) {
+        queue.push(nested);
+      }
+    }
+  }
+
+  return null;
+}
+
 export function parseXHuntRankPayload(payload: unknown, username: string): number | null {
   const queue: unknown[] = [payload];
   const visited = new Set<object>();
@@ -155,6 +199,25 @@ export async function fetchXHuntRank(
         status: "unavailable",
         source: "live",
         note: "XClaw 返回了非 JSON 数据",
+      };
+    }
+
+    const failureMessage = parseXClawFailureMessage(payload);
+    if (failureMessage) {
+      console.error("XClaw rank payload indicated failure", {
+        username: normalizedUsername,
+        responseUrl,
+        failureMessage,
+        bodySnippet: getBodySnippet(body),
+      });
+
+      return {
+        rank: null,
+        available: false,
+        blocked: false,
+        status: "unavailable",
+        source: "live",
+        note: `XClaw: ${failureMessage}`,
       };
     }
 

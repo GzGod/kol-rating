@@ -113,6 +113,50 @@ test("fetchXHuntRank returns unavailable without an official XClaw API key", asy
   }
 });
 
+test("fetchXHuntRank marks status=false payload as unavailable instead of unranked", async () => {
+  let mod: {
+    fetchXHuntRank: (
+      username: string,
+      fetchImpl?: typeof fetch
+    ) => Promise<{ available: boolean; blocked: boolean; rank: number | null; status: string; note: string | null }>;
+  };
+
+  try {
+    mod = await import("../src/lib/xhunt");
+  } catch {
+    assert.fail("xhunt module missing");
+  }
+
+  const previousApiKey = process.env.XCLAW_API_KEY;
+  process.env.XCLAW_API_KEY = "test-xclaw-key";
+
+  try {
+    const result = await mod.fetchXHuntRank("xuegaogx", async () => {
+      return new Response(
+        JSON.stringify({
+          status: false,
+          msg: "Not enough credits. Please recharge your balance.",
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      ) as Response;
+    });
+
+    assert.equal(result.available, false);
+    assert.equal(result.status, "unavailable");
+    assert.equal(result.rank, null);
+    assert.equal(result.note, "XClaw: Not enough credits. Please recharge your balance.");
+  } finally {
+    if (previousApiKey === undefined) {
+      delete process.env.XCLAW_API_KEY;
+    } else {
+      process.env.XCLAW_API_KEY = previousApiKey;
+    }
+  }
+});
+
 test("evaluateCrossValidation returns certified for high rank and high current power", async () => {
   let mod: {
     evaluateCrossValidation: (input: {
