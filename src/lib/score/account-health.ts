@@ -18,10 +18,67 @@ interface HealthInput {
   followerHistory: FollowerSnapshot[];
   tweetCount90d: number;
   retweetRatio: number; // retweets / total in last 100
+  accountCreatedAt?: Date;
+  recentTweets?: Array<{
+    publishedAt: Date;
+    text: string;
+  }>;
+}
+
+function normalizeTweetFormat(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, " url ")
+    .replace(/@\w+/g, " @user ")
+    .replace(/\$\w+/g, " $token ")
+    .replace(/#\w+/g, " #tag ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasRecentTweetFlood(recentTweets: Array<{ publishedAt: Date; text: string }>): boolean {
+  const byDay = new Map<string, number>();
+  for (const tweet of recentTweets) {
+    if (Number.isNaN(tweet.publishedAt.getTime())) {
+      continue;
+    }
+    const key = tweet.publishedAt.toISOString().slice(0, 10);
+    byDay.set(key, (byDay.get(key) || 0) + 1);
+    if ((byDay.get(key) || 0) > 50) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasRepeatedTweetFormat(recentTweets: Array<{ publishedAt: Date; text: string }>): boolean {
+  if (recentTweets.length === 0) return false;
+
+  const patternCounts = new Map<string, number>();
+  for (const tweet of recentTweets.slice(0, 30)) {
+    if (Number.isNaN(tweet.publishedAt.getTime())) {
+      continue;
+    }
+    const normalized = normalizeTweetFormat(tweet.text);
+    if (!normalized) continue;
+    patternCounts.set(normalized, (patternCounts.get(normalized) || 0) + 1);
+  }
+
+  const topPatternCount = Math.max(0, ...patternCounts.values());
+  const sampleSize = Math.min(recentTweets.length, 30);
+  return sampleSize > 0 && topPatternCount / sampleSize > 0.7;
 }
 
 export function calculateHealth(input: HealthInput): HealthResult {
-  const { avgImpressions, followerCount, followingCount, followerHistory, retweetRatio } = input;
+  const {
+    avgImpressions,
+    followerCount,
+    followingCount,
+    followerHistory,
+    accountCreatedAt,
+    recentTweets = [],
+  } = input;
 
   // --- Reach Authenticity (40%) ---
   const reachRate = followerCount > 0 ? avgImpressions / followerCount : 0;
@@ -55,11 +112,25 @@ export function calculateHealth(input: HealthInput): HealthResult {
   }
 
   // --- Anomaly Detection (30%) ---
-  let anomalyScore = 100;
+  let anomalyScore = 70;
   const anomalyFlags: string[] = [];
+  const followerFollowingRatio = followingCount > 0 ? followerCount / followingCount : Infinity;
+  const accountAgeMs = accountCreatedAt ? Date.now() - accountCreatedAt.getTime() : 0;
+
+  if (followerFollowingRatio > 10) {
+    anomalyScore += 10;
+  }
+
+  if (accountCreatedAt && accountAgeMs >= 2 * 365 * 24 * 60 * 60 * 1000) {
+    anomalyScore += 10;
+  }
+
+  if (reachRate > 0.3) {
+    anomalyScore += 10;
+  }
 
   // Follower/following ratio < 2
-  if (followingCount > 0 && followerCount / followingCount < 2) {
+  if (followingCount > 0 && followerFollowingRatio < 2) {
     anomalyScore -= 20;
     anomalyFlags.push("粉丝/关注比 < 2，互关刷粉嫌疑");
   }
@@ -70,13 +141,17 @@ export function calculateHealth(input: HealthInput): HealthResult {
     anomalyFlags.push("触达率 < 5% 且粉丝 > 10K，大量僵尸粉");
   }
 
-  // High retweet ratio
-  if (retweetRatio > 0.7) {
-    anomalyScore -= 20;
-    anomalyFlags.push("转发率 > 70%，原创内容极少");
+  if (hasRecentTweetFlood(recentTweets)) {
+    anomalyScore -= 15;
+    anomalyFlags.push("单日发推 > 50 条，疑似机器人或刷屏");
   }
 
-  anomalyScore = Math.max(0, anomalyScore);
+  if (hasRepeatedTweetFormat(recentTweets)) {
+    anomalyScore -= 20;
+    anomalyFlags.push("最近推文 >70% 为重复格式，疑似自动化发帖");
+  }
+
+  anomalyScore = Math.max(0, Math.min(100, anomalyScore));
 
   const score = reachAuthenticity * 0.4 + growthHealth * 0.3 + anomalyScore * 0.3;
 

@@ -33,12 +33,12 @@ export function calculateEngagement(tweets: TweetMetrics[]): EngagementResult {
   const avgEngagement = totalEngagement / count;
   const avgImpressions = totalImpressions / count;
 
-  // Scale score: Min(100, 13 × ln(Avg_Impressions + 1))
-  const scaleScore = Math.min(100, 13 * Math.log(avgImpressions + 1));
+  // Scale score: Max(0, Min(100, 8.5 × ln(Avg_Impressions + 1) - 20))
+  const scaleScore = Math.max(0, Math.min(100, 8.5 * Math.log(avgImpressions + 1) - 20));
 
-  // Efficiency score: engagement rate per 1000 impressions × 3
+  // Efficiency score: engagement rate per 1000 impressions × 2.2
   const engagementRate = avgImpressions > 0 ? (avgEngagement / avgImpressions) * 1000 : 0;
-  const efficiencyScore = Math.min(100, engagementRate * 3);
+  const efficiencyScore = Math.min(100, engagementRate * 2.2);
 
   const score = scaleScore * 0.5 + efficiencyScore * 0.5;
 

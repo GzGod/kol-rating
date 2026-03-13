@@ -105,7 +105,9 @@ export async function processKol(kolId: string) {
   ]);
 
   // 5. Calculate Power Score
-  const result = await calculatePowerScore(kolId);
+  const result = await calculatePowerScore(kolId, {
+    accountCreatedAt: user.created_at ? new Date(user.created_at) : undefined,
+  });
 
   await prisma.kol.update({
     where: { id: kolId },

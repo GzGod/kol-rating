@@ -1,8 +1,8 @@
 export function getTier(score: number): string {
-  if (score >= 85) return "S";
-  if (score >= 70) return "A";
-  if (score >= 50) return "B";
-  if (score >= 30) return "C";
+  if (score >= 88) return "S";
+  if (score >= 75) return "A";
+  if (score >= 55) return "B";
+  if (score >= 35) return "C";
   return "D";
 }
 
@@ -25,6 +25,8 @@ export const TRACK_LABELS: Record<string, string> = {
   Security_Audit: "安全/审计",
   Infra_Tool: "基础设施",
   BTC_Ecosystem: "BTC 生态",
+  RWA: "RWA",
+  SocialFi: "SocialFi",
   Other: "其他",
 };
 

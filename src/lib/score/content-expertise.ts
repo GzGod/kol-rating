@@ -29,6 +29,15 @@ interface TweetForExpertise {
   publishedAt: Date;
 }
 
+function mapPostingStability(activeWeekCount: number): number {
+  if (activeWeekCount >= 12) return 100;
+  if (activeWeekCount === 11) return 85;
+  if (activeWeekCount === 10) return 70;
+  if (activeWeekCount >= 8) return 50;
+  if (activeWeekCount >= 6) return 30;
+  return 10;
+}
+
 export function calculateExpertise(tweets: TweetForExpertise[]): ExpertiseResult {
   if (tweets.length === 0) {
     return { score: 0, trackFocus: 0, originality: 0, postingStability: 0, topTrack: "Other", trackDistribution: {} };
@@ -76,7 +85,7 @@ export function calculateExpertise(tweets: TweetForExpertise[]): ExpertiseResult
     const weekNum = Math.floor((now.getTime() - t.publishedAt.getTime()) / (7 * 24 * 60 * 60 * 1000));
     if (weekNum < 12) activeWeeks.add(weekNum);
   }
-  const postingStability = Math.round((activeWeeks.size / 12) * 100);
+  const postingStability = mapPostingStability(activeWeeks.size);
 
   const score = trackFocus * 0.4 + originality * 0.3 + postingStability * 0.3;
 

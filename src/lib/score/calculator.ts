@@ -5,7 +5,14 @@ import { calculateHealth } from "./account-health";
 import { getTier } from "@/lib/utils";
 import type { ScoreBreakdown } from "./types";
 
-export async function calculatePowerScore(kolId: string): Promise<ScoreBreakdown> {
+interface PowerScoreOptions {
+  accountCreatedAt?: Date;
+}
+
+export async function calculatePowerScore(
+  kolId: string,
+  options: PowerScoreOptions = {}
+): Promise<ScoreBreakdown> {
   const kol = await prisma.kol.findUniqueOrThrow({
     where: { id: kolId },
     include: {
@@ -44,6 +51,11 @@ export async function calculatePowerScore(kolId: string): Promise<ScoreBreakdown
     followerHistory: kol.followerHistory.map((s) => ({ count: s.count, recordedAt: s.recordedAt })),
     tweetCount90d: kol.tweets.length,
     retweetRatio: kol.tweets.length > 0 ? retweetCount / kol.tweets.length : 0,
+    accountCreatedAt: options.accountCreatedAt,
+    recentTweets: kol.tweets.slice(0, 100).map((tweet) => ({
+      publishedAt: tweet.publishedAt,
+      text: tweet.text,
+    })),
   });
 
   const powerScore = Math.round((engagement.score * 0.4 + expertise.score * 0.35 + health.score * 0.25) * 10) / 10;

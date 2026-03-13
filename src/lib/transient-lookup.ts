@@ -78,6 +78,11 @@ function calculateTransientScore(user: TwitterUser, tweets: NormalizedTweet[]): 
     followerHistory: [],
     tweetCount90d: tweets.length,
     retweetRatio: tweets.length > 0 ? retweetCount / tweets.length : 0,
+    accountCreatedAt: user.created_at ? new Date(user.created_at) : undefined,
+    recentTweets: tweets.slice(0, 100).map((tweet) => ({
+      publishedAt: tweet.publishedAt,
+      text: tweet.text,
+    })),
   });
 
   const powerScore =
