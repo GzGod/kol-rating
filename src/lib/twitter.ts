@@ -16,8 +16,12 @@ function findUserResult(value: unknown): Record<string, unknown> | null {
     visited.add(current);
 
     const legacy = current.legacy;
+    const core = current.core;
     const restId = current.rest_id;
-    if (isRecord(legacy) && (typeof restId === "string" || typeof legacy.screen_name === "string")) {
+    if (
+      (isRecord(legacy) && (typeof restId === "string" || typeof legacy.screen_name === "string")) ||
+      (isRecord(core) && typeof core.screen_name === "string")
+    ) {
       return current;
     }
 
@@ -42,6 +46,18 @@ function getPayloadSnippet(value: unknown, maxLength = 1200): string {
     return serialized.length > maxLength ? `${serialized.slice(0, maxLength)}...` : serialized;
   } catch {
     return "[unserializable payload]";
+  }
+}
+
+function decodeGraphqlUserId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) return "";
+
+  try {
+    const decoded = Buffer.from(value, "base64").toString("utf8");
+    const match = decoded.match(/^User:(\d+)$/);
+    return match?.[1] || "";
+  } catch {
+    return "";
   }
 }
 
@@ -87,20 +103,25 @@ export interface TwitterTweet {
 function extractUser(result: Record<string, unknown>): TwitterUser {
   const userResult = findUserResult(result) || result;
   const legacy = (isRecord(userResult.legacy) ? userResult.legacy : {}) as Record<string, unknown>;
-  const restId = (userResult.rest_id || legacy.id_str || "") as string;
+  const core = (isRecord(userResult.core) ? userResult.core : {}) as Record<string, unknown>;
+  const avatar = (isRecord(userResult.avatar) ? userResult.avatar : {}) as Record<string, unknown>;
+  const restId =
+    (userResult.rest_id as string | undefined) ||
+    (legacy.id_str as string | undefined) ||
+    decodeGraphqlUserId(userResult.id);
 
   return {
     id: restId,
-    name: (legacy.name || "") as string,
-    username: (legacy.screen_name || "") as string,
+    name: ((legacy.name || core.name || "") as string),
+    username: ((legacy.screen_name || core.screen_name || "") as string),
     description: (legacy.description || "") as string,
-    profile_image_url: ((legacy.profile_image_url_https || "") as string).replace("_normal", "_400x400"),
+    profile_image_url: ((legacy.profile_image_url_https || avatar.image_url || "") as string).replace("_normal", "_400x400"),
     public_metrics: {
       followers_count: (legacy.followers_count || 0) as number,
       following_count: (legacy.friends_count || 0) as number,
       tweet_count: (legacy.statuses_count || 0) as number,
     },
-    created_at: (legacy.created_at || "") as string,
+    created_at: ((legacy.created_at || core.created_at || "") as string),
   };
 }
 

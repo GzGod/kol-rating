@@ -55,6 +55,72 @@ test("lookupUser extracts rest_id from nested user_results structure", async () 
   }
 });
 
+test("lookupUser extracts numeric user id from graphql user payload", async () => {
+  let mod: {
+    lookupUser: (username: string) => Promise<{
+      id: string;
+      username: string;
+      name: string;
+      description: string;
+      profile_image_url: string;
+    }>;
+  };
+
+  try {
+    mod = await import("../src/lib/twitter");
+  } catch {
+    assert.fail("twitter module missing");
+  }
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        result: {
+          data: {
+            user: {
+              result: {
+                __typename: "User",
+                id: "VXNlcjoxNzEwNDkwODc2NDg3ODE1MTY4",
+                core: {
+                  created_at: "Sat Oct 07 03:03:07 +0000 2023",
+                  name: "雪糕战神🍦",
+                  screen_name: "Xuegaogx",
+                },
+                avatar: {
+                  image_url: "https://pbs.twimg.com/profile_images/2005277769236889600/YdJuH3Ng_normal.jpg",
+                },
+                legacy: {
+                  description: "现在是芒果味雪糕",
+                  followers_count: 1234,
+                  friends_count: 321,
+                  statuses_count: 88,
+                },
+              },
+            },
+          },
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    ) as Response;
+
+  process.env.RAPIDAPI_KEY = "test-key";
+
+  try {
+    const user = await mod.lookupUser("xuegaogx");
+    assert.equal(user.id, "1710490876487815168");
+    assert.equal(user.username, "Xuegaogx");
+    assert.equal(user.name, "雪糕战神🍦");
+    assert.equal(user.description, "现在是芒果味雪糕");
+    assert.equal(
+      user.profile_image_url,
+      "https://pbs.twimg.com/profile_images/2005277769236889600/YdJuH3Ng_400x400.jpg"
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("lookupUser logs payload summary when twitter241 returns unusable user data", async () => {
   let mod: {
     lookupUser: (username: string) => Promise<{ id: string; username: string; name: string }>;
