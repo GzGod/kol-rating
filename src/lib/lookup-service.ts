@@ -17,9 +17,12 @@ export function isDatabaseConnectionError(error: unknown): boolean {
   return (
     code === "P1001" ||
     code === "P1002" ||
+    code === "P2021" ||
+    code === "P2022" ||
     message.includes("Can't reach database server") ||
     message.includes("Timed out fetching a new connection") ||
-    message.includes("ECONNREFUSED")
+    message.includes("ECONNREFUSED") ||
+    message.includes("does not exist in the current database")
   );
 }
 

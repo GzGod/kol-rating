@@ -36,6 +36,41 @@ test("resolveHandleLookup falls back to transient lookup on database connectivit
   assert.deepEqual(calls, ["persisted:vitalik", "transient:vitalik"]);
 });
 
+test("resolveHandleLookup falls back when persistence schema is missing", async () => {
+  let mod: {
+    resolveHandleLookup: (
+      handle: string,
+      deps: {
+        loadPersisted: (normalizedHandle: string) => Promise<{ source: string }>;
+        loadTransient: (normalizedHandle: string) => Promise<{ source: string }>;
+      }
+    ) => Promise<{ source: string }>;
+  };
+
+  try {
+    mod = await import("../src/lib/lookup-service");
+  } catch {
+    assert.fail("lookup-service module missing");
+  }
+
+  const calls: string[] = [];
+  const result = await mod.resolveHandleLookup("xuegaogx", {
+    async loadPersisted(normalizedHandle) {
+      calls.push(`persisted:${normalizedHandle}`);
+      const error = new Error("The table `public.Kol` does not exist in the current database.") as Error & { code?: string };
+      error.code = "P2021";
+      throw error;
+    },
+    async loadTransient(normalizedHandle) {
+      calls.push(`transient:${normalizedHandle}`);
+      return { source: normalizedHandle };
+    },
+  });
+
+  assert.equal(result.source, "xuegaogx");
+  assert.deepEqual(calls, ["persisted:xuegaogx", "transient:xuegaogx"]);
+});
+
 test("buildTransientLookupResult computes score, tags, and tweet payload without persistence", async () => {
   let mod: {
     buildTransientLookupResult: (input: {
