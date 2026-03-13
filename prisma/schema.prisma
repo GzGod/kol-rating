@@ -1,0 +1,95 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Kol {
+  id              String    @id @default(cuid())
+  twitterId       String    @unique
+  username        String    @unique
+  displayName     String
+  bio             String?
+  avatarUrl       String?
+  followerCount   Int       @default(0)
+  followingCount  Int       @default(0)
+  tweetCount      Int       @default(0)
+
+  powerScore      Float     @default(0)
+  engagementScore Float     @default(0)
+  expertiseScore  Float     @default(0)
+  healthScore     Float     @default(0)
+  tier            String    @default("D")
+
+  primaryTrack    String?
+  secondaryTrack  String?
+  primaryStyle    String?
+  secondaryStyle  String?
+  styleReasoning  String?
+
+  lastScoredAt    DateTime?
+  lastFetchedAt   DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tweets          Tweet[]
+  followerHistory FollowerSnapshot[]
+  scoreHistory    ScoreSnapshot[]
+
+  @@index([tier])
+  @@index([primaryTrack])
+  @@index([powerScore(sort: Desc)])
+}
+
+model Tweet {
+  id              String   @id @default(cuid())
+  tweetId         String   @unique
+  kolId           String
+  kol             Kol      @relation(fields: [kolId], references: [id], onDelete: Cascade)
+
+  text            String
+  isRetweet       Boolean  @default(false)
+  isReply         Boolean  @default(false)
+  isQuote         Boolean  @default(false)
+
+  likeCount       Int      @default(0)
+  retweetCount    Int      @default(0)
+  replyCount      Int      @default(0)
+  quoteCount      Int      @default(0)
+  impressionCount Int      @default(0)
+
+  trackTags       String[] @default([])
+
+  publishedAt     DateTime
+  fetchedAt       DateTime @default(now())
+
+  @@index([kolId, publishedAt(sort: Desc)])
+  @@index([kolId, isRetweet])
+}
+
+model FollowerSnapshot {
+  id         String   @id @default(cuid())
+  kolId      String
+  kol        Kol      @relation(fields: [kolId], references: [id], onDelete: Cascade)
+  count      Int
+  recordedAt DateTime @default(now())
+
+  @@index([kolId, recordedAt(sort: Desc)])
+}
+
+model ScoreSnapshot {
+  id              String   @id @default(cuid())
+  kolId           String
+  kol             Kol      @relation(fields: [kolId], references: [id], onDelete: Cascade)
+  powerScore      Float
+  engagementScore Float
+  expertiseScore  Float
+  healthScore     Float
+  tier            String
+  scoredAt        DateTime @default(now())
+
+  @@index([kolId, scoredAt(sort: Desc)])
+}

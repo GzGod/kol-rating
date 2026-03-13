@@ -1,0 +1,13 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/update",
+      "schedule": "0 2 * * 1"
+    }
+  ],
+  "functions": {
+    "src/app/api/cron/update/route.ts": { "maxDuration": 300 },
+    "src/app/api/kols/route.ts": { "maxDuration": 60 },
+    "src/app/api/kols/[id]/refresh/route.ts": { "maxDuration": 60 }
+  }
+}
