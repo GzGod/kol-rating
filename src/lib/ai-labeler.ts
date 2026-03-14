@@ -1,3 +1,5 @@
+import { fetchWithServiceProxy } from "@/lib/proxy-fetch";
+
 const TRACK_TAGS = [
   "L1_L2",
   "DeFi",
@@ -73,6 +75,7 @@ interface AiCompletionDeps {
   apiKey?: string;
   model?: string;
   retryUntilSuccess?: boolean;
+  useProxy?: boolean;
   logger?: Pick<Console, "info" | "warn" | "error">;
 }
 
@@ -362,8 +365,16 @@ export async function runAiChatCompletion(
   deps: AiCompletionDeps = {}
 ): Promise<string> {
   const fetchImpl = deps.fetchImpl || fetch;
-  const sleep = deps.sleep || delay;
   const logger = deps.logger || console;
+  const sleep = deps.sleep || delay;
+  const shouldUseProxy = deps.useProxy ?? deps.fetchImpl === undefined;
+  const outboundFetch: typeof fetch = shouldUseProxy
+    ? ((input, init) =>
+        fetchWithServiceProxy("ai", input, init, {
+          fetchImpl,
+          logger,
+        })) as typeof fetch
+    : fetchImpl;
   const { apiKey, baseUrl, model, timeoutMs, maxAttempts, retryUntilSuccess } = getAiConfig(
     options.task,
     options,
@@ -387,7 +398,7 @@ export async function runAiChatCompletion(
 
     try {
       const chatUrl = `${baseUrl}/chat/completions`;
-      const response = await fetchImpl(chatUrl, {
+      const response = await outboundFetch(chatUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -407,7 +418,7 @@ export async function runAiChatCompletion(
 
       if (response.ok && !looksLikeJson) {
         const fallback = await runResponsesCompletion(
-          fetchImpl,
+          outboundFetch,
           baseUrl,
           apiKey,
           model,
@@ -435,7 +446,7 @@ export async function runAiChatCompletion(
           response.status === 405
         ) {
           const fallback = await runResponsesCompletion(
-            fetchImpl,
+            outboundFetch,
             baseUrl,
             apiKey,
             model,
