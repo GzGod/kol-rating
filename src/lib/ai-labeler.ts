@@ -33,6 +33,7 @@ const DEFAULT_MAX_ATTEMPTS = {
   track: 4,
   style: 4,
 } as const;
+const DEFAULT_RETRY_UNTIL_SUCCESS = false;
 const DEFAULT_UNAVAILABLE_COOLDOWN_MS = 120_000;
 const DEFAULT_STYLE_RESULT = {
   primary_style: "Analyst" as const,
@@ -62,6 +63,7 @@ interface AiCompletionOptions {
   timeoutMs?: number;
   maxAttempts?: number;
   model?: string;
+  retryUntilSuccess?: boolean;
 }
 
 interface AiCompletionDeps {
@@ -70,6 +72,7 @@ interface AiCompletionDeps {
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  retryUntilSuccess?: boolean;
   logger?: Pick<Console, "info" | "warn" | "error">;
 }
 
@@ -114,6 +117,14 @@ function parsePositiveInt(raw: string | undefined): number | undefined {
   if (!raw) return undefined;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function parseBoolean(raw: string | undefined): boolean | undefined {
+  if (!raw) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return undefined;
 }
 
 function delay(ms: number): Promise<void> {
@@ -309,6 +320,16 @@ function getAiConfig(task: AiTask, options: AiCompletionOptions, deps: AiComplet
     task === "track" ? process.env.AI_TRACK_TIMEOUT_MS : process.env.AI_STYLE_TIMEOUT_MS;
   const attemptEnv =
     task === "track" ? process.env.AI_TRACK_MAX_ATTEMPTS : process.env.AI_STYLE_MAX_ATTEMPTS;
+  const retryEnv =
+    task === "track"
+      ? process.env.AI_TRACK_RETRY_UNTIL_SUCCESS
+      : process.env.AI_STYLE_RETRY_UNTIL_SUCCESS;
+  const retryUntilSuccessEnv = parseBoolean(retryEnv) ?? parseBoolean(process.env.AI_RETRY_UNTIL_SUCCESS);
+  const hasExplicitMaxAttempts = options.maxAttempts !== undefined;
+  const retryUntilSuccess =
+    options.retryUntilSuccess ??
+    deps.retryUntilSuccess ??
+    (!hasExplicitMaxAttempts && (retryUntilSuccessEnv ?? DEFAULT_RETRY_UNTIL_SUCCESS));
 
   return {
     baseUrl: deps.baseUrl || process.env.AI_API_BASE || DEFAULT_AI_BASE,
@@ -317,6 +338,7 @@ function getAiConfig(task: AiTask, options: AiCompletionOptions, deps: AiComplet
     timeoutMs: options.timeoutMs || parsePositiveInt(timeoutEnv) || DEFAULT_TIMEOUT_MS[task],
     maxAttempts:
       options.maxAttempts || parsePositiveInt(attemptEnv) || DEFAULT_MAX_ATTEMPTS[task],
+    retryUntilSuccess,
   };
 }
 
@@ -328,9 +350,10 @@ function isRetryableError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || error instanceof TypeError);
 }
 
-function getRetryDelayMs(attempt: number): number {
+function getRetryDelayMs(attempt: number, retryUntilSuccess: boolean): number {
   const exponentialBackoff = 800 * 2 ** (attempt - 1);
-  return Math.min(exponentialBackoff, 5_000);
+  const maxDelayMs = retryUntilSuccess ? 30_000 : 5_000;
+  return Math.min(exponentialBackoff, maxDelayMs);
 }
 
 export async function runAiChatCompletion(
@@ -341,7 +364,7 @@ export async function runAiChatCompletion(
   const fetchImpl = deps.fetchImpl || fetch;
   const sleep = deps.sleep || delay;
   const logger = deps.logger || console;
-  const { apiKey, baseUrl, model, timeoutMs, maxAttempts } = getAiConfig(
+  const { apiKey, baseUrl, model, timeoutMs, maxAttempts, retryUntilSuccess } = getAiConfig(
     options.task,
     options,
     deps
@@ -357,7 +380,7 @@ export async function runAiChatCompletion(
 
   let lastError: unknown;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  for (let attempt = 1; retryUntilSuccess || attempt <= maxAttempts; attempt++) {
     const startedAt = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -451,7 +474,7 @@ export async function runAiChatCompletion(
       });
       return content;
     } catch (error) {
-      const retryable = attempt < maxAttempts && isRetryableError(error);
+      const retryable = isRetryableError(error) && (retryUntilSuccess || attempt < maxAttempts);
       logger.warn("AI request failed", {
         task: options.task,
         attempt,
@@ -469,7 +492,7 @@ export async function runAiChatCompletion(
       }
 
       lastError = error;
-      await sleep(getRetryDelayMs(attempt));
+      await sleep(getRetryDelayMs(attempt, retryUntilSuccess));
     } finally {
       clearTimeout(timeout);
     }
