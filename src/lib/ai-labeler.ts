@@ -33,6 +33,7 @@ const DEFAULT_MAX_ATTEMPTS = {
   track: 4,
   style: 4,
 } as const;
+const DEFAULT_UNAVAILABLE_COOLDOWN_MS = 120_000;
 const DEFAULT_STYLE_RESULT = {
   primary_style: "Analyst" as const,
   reasoning: "默认分类",
@@ -121,6 +122,34 @@ function delay(ms: number): Promise<void> {
 
 function uniqueTags(tags: TrackTag[]): TrackTag[] {
   return [...new Set(tags)].slice(0, 2);
+}
+
+let aiUnavailableUntilMs = 0;
+
+function getAiUnavailableCooldownMs(): number {
+  return parsePositiveInt(process.env.AI_UNAVAILABLE_COOLDOWN_MS) || DEFAULT_UNAVAILABLE_COOLDOWN_MS;
+}
+
+function isAiUnavailableNow(now = Date.now()): boolean {
+  return now < aiUnavailableUntilMs;
+}
+
+function markAiUnavailable(now = Date.now()): void {
+  aiUnavailableUntilMs = now + getAiUnavailableCooldownMs();
+}
+
+function isAiServiceUnavailableError(error: unknown): boolean {
+  if (error instanceof AiRequestError) {
+    return error.status === 503;
+  }
+
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("ai api error 503") || message.includes("service temporarily unavailable");
+}
+
+export function __resetAiUnavailableCooldownForTests(): void {
+  aiUnavailableUntilMs = 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -244,6 +273,10 @@ export async function runAiChatCompletion(
     throw new Error("AI_API_KEY is not configured");
   }
 
+  if (isAiUnavailableNow()) {
+    throw new AiRequestError("AI API temporarily unavailable (cooldown)", 503);
+  }
+
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -342,6 +375,9 @@ export async function runAiChatCompletion(
       });
 
       if (!retryable) {
+        if (isAiServiceUnavailableError(error)) {
+          markAiUnavailable();
+        }
         throw error;
       }
 
@@ -436,9 +472,15 @@ function extractJsonObject<T>(raw: string): T {
 export async function labelTweetTracks(tweets: TweetInput[]): Promise<TweetLabel[]> {
   const results: TweetLabel[] = [];
   const batchSize = 20;
+  let skipRemainingRemoteBatches = false;
 
   for (let i = 0; i < tweets.length; i += batchSize) {
     const batch = tweets.slice(i, i + batchSize);
+
+    if (skipRemainingRemoteBatches) {
+      results.push(...repairTrackLabelBatch(batch, []));
+      continue;
+    }
 
     const systemPrompt = `你是一个 Web3 内容分类引擎。你的任务是给推文打赛道标签。
 
@@ -502,6 +544,15 @@ ${JSON.stringify(batch, null, 2)}
         message: error instanceof Error ? error.message : String(error),
       });
       results.push(...repairTrackLabelBatch(batch, []));
+
+      if (isAiServiceUnavailableError(error)) {
+        skipRemainingRemoteBatches = true;
+        const remainingTweets = Math.max(0, tweets.length - i - batch.length);
+        const remainingBatches = Math.ceil(remainingTweets / batchSize);
+        console.warn("AI service unavailable, skipping remaining track batches", {
+          remainingBatches,
+        });
+      }
     }
   }
 

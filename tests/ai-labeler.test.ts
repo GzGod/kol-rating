@@ -305,6 +305,142 @@ test("runAiChatCompletion retries 503 responses and eventually succeeds", async 
   assert.equal(attempts, 3);
 });
 
+test("runAiChatCompletion enters cooldown after non-retryable 503", async () => {
+  let mod: {
+    runAiChatCompletion: (
+      messages: Array<{ role: string; content: string }>,
+      options: {
+        task: "track" | "style";
+        timeoutMs?: number;
+        maxAttempts?: number;
+      },
+      deps?: {
+        fetchImpl?: typeof fetch;
+        sleep?: (ms: number) => Promise<void>;
+        baseUrl?: string;
+        apiKey?: string;
+        model?: string;
+      }
+    ) => Promise<string>;
+    __resetAiUnavailableCooldownForTests: () => void;
+  };
+
+  try {
+    mod = await import("../src/lib/ai-labeler");
+  } catch {
+    assert.fail("ai-labeler module missing");
+  }
+
+  mod.__resetAiUnavailableCooldownForTests();
+  let fetchCalls = 0;
+
+  try {
+    await assert.rejects(
+      mod.runAiChatCompletion(
+        [{ role: "user", content: "hello" }],
+        { task: "track", maxAttempts: 1 },
+        {
+          baseUrl: "https://example.com/v1",
+          apiKey: "test-key",
+          model: "test-model",
+          fetchImpl: async () => {
+            fetchCalls++;
+            return new Response(
+              JSON.stringify({
+                error: { message: "Service temporarily unavailable", type: "api_error" },
+              }),
+              {
+                status: 503,
+                headers: { "Content-Type": "application/json" },
+              }
+            );
+          },
+        }
+      ),
+      /AI API error 503/
+    );
+
+    await assert.rejects(
+      mod.runAiChatCompletion(
+        [{ role: "user", content: "hello" }],
+        { task: "track", maxAttempts: 1 },
+        {
+          baseUrl: "https://example.com/v1",
+          apiKey: "test-key",
+          model: "test-model",
+          fetchImpl: async () => {
+            fetchCalls++;
+            throw new Error("should not be called during cooldown");
+          },
+        }
+      ),
+      /cooldown/
+    );
+
+    assert.equal(fetchCalls, 1);
+  } finally {
+    mod.__resetAiUnavailableCooldownForTests();
+  }
+});
+
+test("labelTweetTracks skips remaining remote batches once service is unavailable", async () => {
+  let mod: {
+    labelTweetTracks: (tweets: Array<{ id: string; text: string }>) => Promise<Array<{ id: string; tags: string[] }>>;
+    __resetAiUnavailableCooldownForTests: () => void;
+  };
+
+  try {
+    mod = await import("../src/lib/ai-labeler");
+  } catch {
+    assert.fail("ai-labeler module missing");
+  }
+
+  mod.__resetAiUnavailableCooldownForTests();
+  const originalFetch = globalThis.fetch;
+  const previousApiKey = process.env.AI_API_KEY;
+  const previousTrackAttempts = process.env.AI_TRACK_MAX_ATTEMPTS;
+  process.env.AI_API_KEY = "test-key";
+  process.env.AI_TRACK_MAX_ATTEMPTS = "1";
+  let fetchCalls = 0;
+
+  globalThis.fetch = (async () => {
+    fetchCalls++;
+    return new Response(
+      JSON.stringify({
+        error: { message: "Service temporarily unavailable", type: "api_error" },
+      }),
+      {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  }) as typeof fetch;
+
+  try {
+    const tweets = Array.from({ length: 40 }).map((_, index) => ({
+      id: `tweet_${index}`,
+      text: `Solana DeFi alpha ${index}`,
+    }));
+    const labels = await mod.labelTweetTracks(tweets);
+
+    assert.equal(labels.length, 40);
+    assert.equal(fetchCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousApiKey === undefined) {
+      delete process.env.AI_API_KEY;
+    } else {
+      process.env.AI_API_KEY = previousApiKey;
+    }
+    if (previousTrackAttempts === undefined) {
+      delete process.env.AI_TRACK_MAX_ATTEMPTS;
+    } else {
+      process.env.AI_TRACK_MAX_ATTEMPTS = previousTrackAttempts;
+    }
+    mod.__resetAiUnavailableCooldownForTests();
+  }
+});
+
 test("labelKolSignals starts track and style labeling without waiting for one another", async () => {
   let mod: {
     labelKolSignals: (
