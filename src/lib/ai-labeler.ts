@@ -48,6 +48,7 @@ export type StyleTag = (typeof STYLE_TAGS)[number];
 type AiTask = "track" | "style";
 type ChatMessage = { role: string; content: string };
 type TweetInput = { id: string; text: string };
+type AiProtocol = "chat" | "responses" | "messages";
 
 interface TweetLabel {
   id: string;
@@ -268,6 +269,84 @@ function buildResponsesUrls(baseUrl: string): string[] {
   return [...new Set(urls)];
 }
 
+function buildMessagesUrls(baseUrl: string): string[] {
+  const normalizedBase = trimTrailingSlash(baseUrl);
+  const urls: string[] = [`${normalizedBase}/messages`];
+
+  try {
+    const parsed = new URL(normalizedBase);
+    const pathname = trimTrailingSlash(parsed.pathname);
+    if (pathname.endsWith("/v1") || pathname === "/v1") {
+      const rootPath = pathname.slice(0, -3) || "/";
+      parsed.pathname = rootPath;
+      urls.push(`${trimTrailingSlash(parsed.toString())}/messages`);
+    } else {
+      urls.push(`${normalizedBase}/v1/messages`);
+    }
+  } catch {
+    if (!normalizedBase.endsWith("/v1")) {
+      urls.push(`${normalizedBase}/v1/messages`);
+    } else {
+      urls.push(`${normalizedBase.slice(0, -3)}/messages`);
+    }
+  }
+
+  return [...new Set(urls)];
+}
+
+function extractMessagesOutputText(payload: unknown): string | null {
+  if (!isRecord(payload)) return null;
+
+  const content = payload.content;
+  if (!Array.isArray(content)) return null;
+
+  const chunks: string[] = [];
+  for (const part of content) {
+    if (!isRecord(part)) continue;
+    if (part.type !== "text") continue;
+    if (typeof part.text === "string" && part.text.trim()) {
+      chunks.push(part.text.trim());
+    }
+  }
+
+  if (chunks.length === 0) return null;
+  return chunks.join("\n");
+}
+
+function normalizeAnthropicRole(role: string): "user" | "assistant" {
+  return role === "assistant" ? "assistant" : "user";
+}
+
+function toAnthropicMessages(messages: ChatMessage[]): {
+  system?: string;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+} {
+  const system = messages
+    .filter((message) => message.role === "system")
+    .map((message) => message.content.trim())
+    .filter((content) => content.length > 0)
+    .join("\n\n");
+
+  const conversation = messages
+    .filter((message) => message.role !== "system")
+    .map((message) => ({
+      role: normalizeAnthropicRole(message.role),
+      content: message.content,
+    }));
+
+  if (conversation.length === 0) {
+    conversation.push({
+      role: "user",
+      content: "",
+    });
+  }
+
+  return {
+    system: system || undefined,
+    messages: conversation,
+  };
+}
+
 async function runResponsesCompletion(
   fetchImpl: typeof fetch,
   baseUrl: string,
@@ -309,6 +388,60 @@ async function runResponsesCompletion(
       }
 
       return { content: responsesContent, url: responsesUrl };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("AI response missing message content");
+}
+
+async function runMessagesCompletion(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  messages: ChatMessage[],
+  signal: AbortSignal
+): Promise<{ content: string; url: string }> {
+  let lastError: unknown;
+  const anthropicVersion = process.env.AI_ANTHROPIC_VERSION || "2023-06-01";
+  const maxTokens = parsePositiveInt(process.env.AI_MESSAGES_MAX_TOKENS) || 4096;
+  const payload = toAnthropicMessages(messages);
+
+  for (const messagesUrl of buildMessagesUrls(baseUrl)) {
+    try {
+      const messagesResponse = await fetchImpl(messagesUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": anthropicVersion,
+        },
+        signal,
+        body: JSON.stringify({
+          model,
+          max_tokens: maxTokens,
+          system: payload.system,
+          messages: payload.messages,
+          temperature: 0.2,
+        }),
+      });
+
+      if (!messagesResponse.ok) {
+        throw new AiRequestError(
+          `AI API error ${messagesResponse.status}: ${await messagesResponse.text()}`,
+          messagesResponse.status
+        );
+      }
+
+      const messagesPayload = (await messagesResponse.json()) as unknown;
+      const content = extractMessagesOutputText(messagesPayload);
+      if (!content) {
+        throw new Error("AI response missing message content");
+      }
+
+      return { content, url: messagesUrl };
     } catch (error) {
       lastError = error;
     }
@@ -359,6 +492,34 @@ function getRetryDelayMs(attempt: number, retryUntilSuccess: boolean): number {
   return Math.min(exponentialBackoff, maxDelayMs);
 }
 
+function resolveAiProtocol(baseUrl: string, model: string): AiProtocol {
+  const explicitProtocol = process.env.AI_PROTOCOL?.trim().toLowerCase();
+  if (explicitProtocol === "chat" || explicitProtocol === "responses" || explicitProtocol === "messages") {
+    return explicitProtocol;
+  }
+
+  const responsesOnly = parseBoolean(process.env.AI_RESPONSES_ONLY);
+  if (responsesOnly === true) {
+    return "responses";
+  }
+
+  let hostname = "";
+  try {
+    hostname = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    hostname = "";
+  }
+
+  if (hostname === "code.aipor.cc") {
+    if (model.trim().toLowerCase().startsWith("claude")) {
+      return "messages";
+    }
+    return "responses";
+  }
+
+  return "chat";
+}
+
 export async function runAiChatCompletion(
   messages: ChatMessage[],
   options: AiCompletionOptions,
@@ -380,6 +541,7 @@ export async function runAiChatCompletion(
     options,
     deps
   );
+  const preferredProtocol = resolveAiProtocol(baseUrl, model);
 
   if (!apiKey) {
     throw new Error("AI_API_KEY is not configured");
@@ -397,6 +559,48 @@ export async function runAiChatCompletion(
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
+      if (preferredProtocol === "messages") {
+        const completion = await runMessagesCompletion(
+          outboundFetch,
+          baseUrl,
+          apiKey,
+          model,
+          messages,
+          controller.signal
+        );
+
+        logger.info("AI request completed", {
+          task: options.task,
+          attempt,
+          durationMs: Date.now() - startedAt,
+          model,
+          protocol: "messages",
+          url: completion.url,
+        });
+        return completion.content;
+      }
+
+      if (preferredProtocol === "responses") {
+        const fallback = await runResponsesCompletion(
+          outboundFetch,
+          baseUrl,
+          apiKey,
+          model,
+          messages,
+          controller.signal
+        );
+
+        logger.info("AI request completed", {
+          task: options.task,
+          attempt,
+          durationMs: Date.now() - startedAt,
+          model,
+          protocol: "responses",
+          url: fallback.url,
+        });
+        return fallback.content;
+      }
+
       const chatUrl = `${baseUrl}/chat/completions`;
       const response = await outboundFetch(chatUrl, {
         method: "POST",

@@ -240,6 +240,126 @@ test("runAiChatCompletion falls back to /responses when legacy chat endpoint is 
   ]);
 });
 
+test("runAiChatCompletion uses /responses directly for code.aipor.cc base", async () => {
+  let mod: {
+    runAiChatCompletion: (
+      messages: Array<{ role: string; content: string }>,
+      options: {
+        task: "track" | "style";
+        timeoutMs?: number;
+        maxAttempts?: number;
+      },
+      deps?: {
+        fetchImpl?: typeof fetch;
+        sleep?: (ms: number) => Promise<void>;
+        baseUrl?: string;
+        apiKey?: string;
+        model?: string;
+      }
+    ) => Promise<string>;
+  };
+
+  try {
+    mod = await import("../src/lib/ai-labeler");
+  } catch {
+    assert.fail("ai-labeler module missing");
+  }
+
+  const requestedUrls: string[] = [];
+  const raw = await mod.runAiChatCompletion(
+    [{ role: "user", content: "hello" }],
+    { task: "track", maxAttempts: 1 },
+    {
+      baseUrl: "https://code.aipor.cc/v1",
+      apiKey: "test-key",
+      model: "gpt-5.1",
+      fetchImpl: async (input) => {
+        const url = typeof input === "string" ? input : input.toString();
+        requestedUrls.push(url);
+
+        if (url.endsWith("/chat/completions")) {
+          throw new Error("chat endpoint should not be called for code.aipor.cc");
+        }
+
+        return new Response(
+          JSON.stringify({
+            output_text: '[{"id":"tweet_001","tags":["DeFi"]}]',
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      },
+    }
+  );
+
+  assert.equal(raw, '[{"id":"tweet_001","tags":["DeFi"]}]');
+  assert.deepEqual(requestedUrls, ["https://code.aipor.cc/v1/responses"]);
+});
+
+test("runAiChatCompletion uses /messages for code.aipor.cc claude models", async () => {
+  let mod: {
+    runAiChatCompletion: (
+      messages: Array<{ role: string; content: string }>,
+      options: {
+        task: "track" | "style";
+        timeoutMs?: number;
+        maxAttempts?: number;
+      },
+      deps?: {
+        fetchImpl?: typeof fetch;
+        sleep?: (ms: number) => Promise<void>;
+        baseUrl?: string;
+        apiKey?: string;
+        model?: string;
+      }
+    ) => Promise<string>;
+  };
+
+  try {
+    mod = await import("../src/lib/ai-labeler");
+  } catch {
+    assert.fail("ai-labeler module missing");
+  }
+
+  const requestedUrls: string[] = [];
+  const raw = await mod.runAiChatCompletion(
+    [{ role: "user", content: "hello" }],
+    { task: "track", maxAttempts: 1 },
+    {
+      baseUrl: "https://code.aipor.cc/v1",
+      apiKey: "test-key",
+      model: "claude-opus-4-6",
+      fetchImpl: async (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        requestedUrls.push(url);
+
+        if (url.endsWith("/chat/completions") || url.endsWith("/responses")) {
+          throw new Error("chat/responses endpoint should not be called for code.aipor.cc claude model");
+        }
+
+        const headers = new Headers((init?.headers || {}) as HeadersInit);
+        assert.equal(headers.get("x-api-key"), "test-key");
+        assert.equal(headers.get("anthropic-version"), "2023-06-01");
+
+        return new Response(
+          JSON.stringify({
+            content: [{ type: "text", text: '[{"id":"tweet_001","tags":["DeFi"]}]' }],
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      },
+    }
+  );
+
+  assert.equal(raw, '[{"id":"tweet_001","tags":["DeFi"]}]');
+  assert.deepEqual(requestedUrls, ["https://code.aipor.cc/v1/messages"]);
+});
+
 test("runAiChatCompletion falls back to /responses when chat endpoint returns HTML", async () => {
   let mod: {
     runAiChatCompletion: (
