@@ -240,6 +240,155 @@ test("runAiChatCompletion falls back to /responses when legacy chat endpoint is 
   ]);
 });
 
+test("runAiChatCompletion falls back to /responses when chat endpoint returns HTML", async () => {
+  let mod: {
+    runAiChatCompletion: (
+      messages: Array<{ role: string; content: string }>,
+      options: {
+        task: "track" | "style";
+        timeoutMs?: number;
+        maxAttempts?: number;
+      },
+      deps?: {
+        fetchImpl?: typeof fetch;
+        sleep?: (ms: number) => Promise<void>;
+        baseUrl?: string;
+        apiKey?: string;
+        model?: string;
+      }
+    ) => Promise<string>;
+  };
+
+  try {
+    mod = await import("../src/lib/ai-labeler");
+  } catch {
+    assert.fail("ai-labeler module missing");
+  }
+
+  const requestedUrls: string[] = [];
+  const raw = await mod.runAiChatCompletion(
+    [{ role: "user", content: "hello" }],
+    { task: "track", maxAttempts: 1 },
+    {
+      baseUrl: "https://example.com",
+      apiKey: "test-key",
+      model: "test-model",
+      fetchImpl: async (input) => {
+        const url = typeof input === "string" ? input : input.toString();
+        requestedUrls.push(url);
+
+        if (url.endsWith("/chat/completions")) {
+          return new Response("<html>landing page</html>", {
+            status: 200,
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+          });
+        }
+
+        return new Response(
+          JSON.stringify({
+            output_text: '[{"id":"tweet_001","tags":["DeFi"]}]',
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      },
+    }
+  );
+
+  assert.equal(raw, '[{"id":"tweet_001","tags":["DeFi"]}]');
+  assert.deepEqual(requestedUrls, [
+    "https://example.com/chat/completions",
+    "https://example.com/responses",
+  ]);
+});
+
+test("runAiChatCompletion tries secondary responses URL when primary responses URL is unavailable", async () => {
+  let mod: {
+    runAiChatCompletion: (
+      messages: Array<{ role: string; content: string }>,
+      options: {
+        task: "track" | "style";
+        timeoutMs?: number;
+        maxAttempts?: number;
+      },
+      deps?: {
+        fetchImpl?: typeof fetch;
+        sleep?: (ms: number) => Promise<void>;
+        baseUrl?: string;
+        apiKey?: string;
+        model?: string;
+      }
+    ) => Promise<string>;
+  };
+
+  try {
+    mod = await import("../src/lib/ai-labeler");
+  } catch {
+    assert.fail("ai-labeler module missing");
+  }
+
+  const requestedUrls: string[] = [];
+  const raw = await mod.runAiChatCompletion(
+    [{ role: "user", content: "hello" }],
+    { task: "track", maxAttempts: 1 },
+    {
+      baseUrl: "https://example.com/v1",
+      apiKey: "test-key",
+      model: "test-model",
+      fetchImpl: async (input) => {
+        const url = typeof input === "string" ? input : input.toString();
+        requestedUrls.push(url);
+
+        if (url.endsWith("/chat/completions")) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                message:
+                  "Unsupported legacy protocol: /v1/chat/completions is not supported. Please use /v1/responses.",
+              },
+            }),
+            {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            }
+          );
+        }
+
+        if (url.endsWith("/v1/responses")) {
+          return new Response(
+            JSON.stringify({
+              error: { message: "Service temporarily unavailable", type: "api_error" },
+            }),
+            {
+              status: 503,
+              headers: { "Content-Type": "application/json" },
+            }
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            output_text: '[{"id":"tweet_001","tags":["DeFi"]}]',
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      },
+    }
+  );
+
+  assert.equal(raw, '[{"id":"tweet_001","tags":["DeFi"]}]');
+  assert.deepEqual(requestedUrls, [
+    "https://example.com/v1/chat/completions",
+    "https://example.com/v1/responses",
+    "https://example.com/responses",
+  ]);
+});
+
 test("runAiChatCompletion retries 503 responses and eventually succeeds", async () => {
   let mod: {
     runAiChatCompletion: (

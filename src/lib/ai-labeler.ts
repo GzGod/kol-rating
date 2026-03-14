@@ -225,6 +225,84 @@ function extractResponsesOutputText(payload: unknown): string | null {
   return null;
 }
 
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function buildResponsesUrls(baseUrl: string): string[] {
+  const normalizedBase = trimTrailingSlash(baseUrl);
+  const urls: string[] = [`${normalizedBase}/responses`];
+
+  try {
+    const parsed = new URL(normalizedBase);
+    const pathname = trimTrailingSlash(parsed.pathname);
+    if (pathname.endsWith("/v1") || pathname === "/v1") {
+      const rootPath = pathname.slice(0, -3) || "/";
+      parsed.pathname = rootPath;
+      urls.push(`${trimTrailingSlash(parsed.toString())}/responses`);
+    } else {
+      urls.push(`${normalizedBase}/v1/responses`);
+    }
+  } catch {
+    if (!normalizedBase.endsWith("/v1")) {
+      urls.push(`${normalizedBase}/v1/responses`);
+    } else {
+      urls.push(`${normalizedBase.slice(0, -3)}/responses`);
+    }
+  }
+
+  return [...new Set(urls)];
+}
+
+async function runResponsesCompletion(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  messages: ChatMessage[],
+  signal: AbortSignal
+): Promise<{ content: string; url: string }> {
+  let lastError: unknown;
+
+  for (const responsesUrl of buildResponsesUrls(baseUrl)) {
+    try {
+      const responsesResponse = await fetchImpl(responsesUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        signal,
+        body: JSON.stringify({
+          model,
+          input: toResponsesInput(messages),
+          temperature: 0.2,
+          max_output_tokens: 4096,
+        }),
+      });
+
+      if (!responsesResponse.ok) {
+        throw new AiRequestError(
+          `AI API error ${responsesResponse.status}: ${await responsesResponse.text()}`,
+          responsesResponse.status
+        );
+      }
+
+      const responsesPayload = (await responsesResponse.json()) as unknown;
+      const responsesContent = extractResponsesOutputText(responsesPayload);
+      if (!responsesContent) {
+        throw new Error("AI response missing message content");
+      }
+
+      return { content: responsesContent, url: responsesUrl };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("AI response missing message content");
+}
+
 function getAiConfig(task: AiTask, options: AiCompletionOptions, deps: AiCompletionDeps) {
   const modelEnv = task === "track" ? process.env.AI_TRACK_MODEL : process.env.AI_STYLE_MODEL;
   const timeoutEnv =
@@ -301,38 +379,46 @@ export async function runAiChatCompletion(
         }),
       });
 
+      const contentType = response.headers.get("content-type") || "";
+      const looksLikeJson = contentType.toLowerCase().includes("application/json");
+
+      if (response.ok && !looksLikeJson) {
+        const fallback = await runResponsesCompletion(
+          fetchImpl,
+          baseUrl,
+          apiKey,
+          model,
+          messages,
+          controller.signal
+        );
+
+        logger.info("AI request completed", {
+          task: options.task,
+          attempt,
+          durationMs: Date.now() - startedAt,
+          model,
+          protocol: "responses",
+          url: fallback.url,
+        });
+        return fallback.content;
+      }
+
       if (!response.ok) {
         const errorBody = await response.text();
 
-        if (shouldUseResponsesFallback(response.status, errorBody)) {
-          const responsesUrl = `${baseUrl}/responses`;
-          const responsesResponse = await fetchImpl(responsesUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${apiKey}`,
-            },
-            signal: controller.signal,
-            body: JSON.stringify({
-              model,
-              input: toResponsesInput(messages),
-              temperature: 0.2,
-              max_output_tokens: 4096,
-            }),
-          });
-
-          if (!responsesResponse.ok) {
-            throw new AiRequestError(
-              `AI API error ${responsesResponse.status}: ${await responsesResponse.text()}`,
-              responsesResponse.status
-            );
-          }
-
-          const responsesPayload = (await responsesResponse.json()) as unknown;
-          const responsesContent = extractResponsesOutputText(responsesPayload);
-          if (!responsesContent) {
-            throw new Error("AI response missing message content");
-          }
+        if (
+          shouldUseResponsesFallback(response.status, errorBody) ||
+          response.status === 404 ||
+          response.status === 405
+        ) {
+          const fallback = await runResponsesCompletion(
+            fetchImpl,
+            baseUrl,
+            apiKey,
+            model,
+            messages,
+            controller.signal
+          );
 
           logger.info("AI request completed", {
             task: options.task,
@@ -340,8 +426,9 @@ export async function runAiChatCompletion(
             durationMs: Date.now() - startedAt,
             model,
             protocol: "responses",
+            url: fallback.url,
           });
-          return responsesContent;
+          return fallback.content;
         }
 
         throw new AiRequestError(`AI API error ${response.status}: ${errorBody}`, response.status);
