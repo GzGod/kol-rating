@@ -30,8 +30,8 @@ const DEFAULT_TIMEOUT_MS = {
   style: 20_000,
 } as const;
 const DEFAULT_MAX_ATTEMPTS = {
-  track: 2,
-  style: 2,
+  track: 4,
+  style: 4,
 } as const;
 const DEFAULT_STYLE_RESULT = {
   primary_style: "Analyst" as const,
@@ -222,7 +222,8 @@ function isRetryableError(error: unknown): boolean {
 }
 
 function getRetryDelayMs(attempt: number): number {
-  return 300 * attempt;
+  const exponentialBackoff = 800 * 2 ** (attempt - 1);
+  return Math.min(exponentialBackoff, 5_000);
 }
 
 export async function runAiChatCompletion(

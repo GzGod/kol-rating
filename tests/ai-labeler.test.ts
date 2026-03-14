@@ -240,6 +240,71 @@ test("runAiChatCompletion falls back to /responses when legacy chat endpoint is 
   ]);
 });
 
+test("runAiChatCompletion retries 503 responses and eventually succeeds", async () => {
+  let mod: {
+    runAiChatCompletion: (
+      messages: Array<{ role: string; content: string }>,
+      options: {
+        task: "track" | "style";
+        timeoutMs?: number;
+        maxAttempts?: number;
+      },
+      deps?: {
+        fetchImpl?: typeof fetch;
+        sleep?: (ms: number) => Promise<void>;
+        baseUrl?: string;
+        apiKey?: string;
+        model?: string;
+      }
+    ) => Promise<string>;
+  };
+
+  try {
+    mod = await import("../src/lib/ai-labeler");
+  } catch {
+    assert.fail("ai-labeler module missing");
+  }
+
+  let attempts = 0;
+  const raw = await mod.runAiChatCompletion(
+    [{ role: "user", content: "hello" }],
+    { task: "track", maxAttempts: 3 },
+    {
+      baseUrl: "https://example.com/v1",
+      apiKey: "test-key",
+      model: "test-model",
+      sleep: async () => {},
+      fetchImpl: async () => {
+        attempts++;
+        if (attempts < 3) {
+          return new Response(
+            JSON.stringify({
+              error: { message: "Service temporarily unavailable", type: "api_error" },
+            }),
+            {
+              status: 503,
+              headers: { "Content-Type": "application/json" },
+            }
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '[{"id":"tweet_001","tags":["DeFi"]}]' } }],
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      },
+    }
+  );
+
+  assert.equal(raw, '[{"id":"tweet_001","tags":["DeFi"]}]');
+  assert.equal(attempts, 3);
+});
+
 test("labelKolSignals starts track and style labeling without waiting for one another", async () => {
   let mod: {
     labelKolSignals: (
