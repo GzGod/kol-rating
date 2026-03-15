@@ -274,6 +274,48 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+function normalizeAiBaseUrl(baseUrl: string): string {
+  const normalized = trimTrailingSlash(baseUrl.trim());
+
+  try {
+    const parsed = new URL(normalized);
+    const hostname = parsed.hostname.toLowerCase();
+    const pathname = trimTrailingSlash(parsed.pathname);
+    const requiresV1Path =
+      hostname === "ai-openclaw.one" ||
+      hostname === "www.ai-openclaw.one" ||
+      hostname === "code.aipor.cc";
+
+    if (requiresV1Path && (pathname === "" || pathname === "/")) {
+      parsed.pathname = "/v1";
+      return trimTrailingSlash(parsed.toString());
+    }
+  } catch {
+    // Keep original normalized URL when parsing fails.
+  }
+
+  return normalized;
+}
+
+function shouldUseRootPathFallback(baseUrl: string): boolean {
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase();
+    // These providers expose API endpoints strictly under /v1.
+    // Falling back to root path usually hits their website HTML.
+    if (
+      hostname === "ai-openclaw.one" ||
+      hostname === "www.ai-openclaw.one" ||
+      hostname === "code.aipor.cc"
+    ) {
+      return false;
+    }
+  } catch {
+    // Keep default fallback behavior when URL parsing fails.
+  }
+
+  return true;
+}
+
 function getBodySnippet(body: string, maxLength = 240): string {
   const trimmed = body.trim();
   if (!trimmed) return "";
@@ -318,6 +360,9 @@ async function parseJsonResponseBody(
 function buildResponsesUrls(baseUrl: string): string[] {
   const normalizedBase = trimTrailingSlash(baseUrl);
   const urls: string[] = [`${normalizedBase}/responses`];
+  if (!shouldUseRootPathFallback(normalizedBase)) {
+    return urls;
+  }
 
   try {
     const parsed = new URL(normalizedBase);
@@ -343,6 +388,9 @@ function buildResponsesUrls(baseUrl: string): string[] {
 function buildMessagesUrls(baseUrl: string): string[] {
   const normalizedBase = trimTrailingSlash(baseUrl);
   const urls: string[] = [`${normalizedBase}/messages`];
+  if (!shouldUseRootPathFallback(normalizedBase)) {
+    return urls;
+  }
 
   try {
     const parsed = new URL(normalizedBase);
@@ -539,7 +587,7 @@ function getAiConfig(task: AiTask, options: AiCompletionOptions, deps: AiComplet
     (!hasExplicitMaxAttempts && (retryUntilSuccessEnv ?? DEFAULT_RETRY_UNTIL_SUCCESS));
 
   return {
-    baseUrl: deps.baseUrl || process.env.AI_API_BASE || DEFAULT_AI_BASE,
+    baseUrl: normalizeAiBaseUrl(deps.baseUrl || process.env.AI_API_BASE || DEFAULT_AI_BASE),
     apiKey: deps.apiKey || process.env.AI_API_KEY || "",
     model: options.model || deps.model || modelEnv || process.env.AI_MODEL || DEFAULT_AI_MODEL,
     timeoutMs: options.timeoutMs || parsePositiveInt(timeoutEnv) || DEFAULT_TIMEOUT_MS[task],

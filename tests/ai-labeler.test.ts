@@ -360,6 +360,64 @@ test("runAiChatCompletion uses /messages for code.aipor.cc claude models", async
   assert.deepEqual(requestedUrls, ["https://code.aipor.cc/v1/messages"]);
 });
 
+test("runAiChatCompletion normalizes ai-openclaw base URL to /v1/messages", async () => {
+  let mod: {
+    runAiChatCompletion: (
+      messages: Array<{ role: string; content: string }>,
+      options: {
+        task: "track" | "style";
+        timeoutMs?: number;
+        maxAttempts?: number;
+      },
+      deps?: {
+        fetchImpl?: typeof fetch;
+        sleep?: (ms: number) => Promise<void>;
+        baseUrl?: string;
+        apiKey?: string;
+        model?: string;
+      }
+    ) => Promise<string>;
+  };
+
+  try {
+    mod = await import("../src/lib/ai-labeler");
+  } catch {
+    assert.fail("ai-labeler module missing");
+  }
+
+  const requestedUrls: string[] = [];
+  const raw = await mod.runAiChatCompletion(
+    [{ role: "user", content: "hello" }],
+    { task: "style", maxAttempts: 1 },
+    {
+      baseUrl: "https://www.ai-openclaw.one",
+      apiKey: "test-key",
+      model: "claude-sonnet-4-6",
+      fetchImpl: async (input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        requestedUrls.push(url);
+
+        const headers = new Headers((init?.headers || {}) as HeadersInit);
+        assert.equal(headers.get("x-api-key"), "test-key");
+        assert.equal(headers.get("anthropic-version"), "2023-06-01");
+
+        return new Response(
+          JSON.stringify({
+            content: [{ type: "text", text: "ok" }],
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      },
+    }
+  );
+
+  assert.equal(raw, "ok");
+  assert.deepEqual(requestedUrls, ["https://www.ai-openclaw.one/v1/messages"]);
+});
+
 test("runAiChatCompletion falls back to /responses when chat endpoint returns HTML", async () => {
   let mod: {
     runAiChatCompletion: (
