@@ -61,6 +61,11 @@ interface StyleResult {
   reasoning: string;
 }
 
+interface ErrorWithDiagnostics extends Error {
+  cause?: unknown;
+  attemptedUrl?: string;
+}
+
 interface AiCompletionOptions {
   task: AiTask;
   timeoutMs?: number;
@@ -508,6 +513,10 @@ async function runResponsesCompletion(
 
       return { content: responsesContent, url: responsesUrl };
     } catch (error) {
+      if (error instanceof Error) {
+        (error as ErrorWithDiagnostics).attemptedUrl =
+          (error as ErrorWithDiagnostics).attemptedUrl || responsesUrl;
+      }
       lastError = error;
     }
   }
@@ -562,6 +571,10 @@ async function runMessagesCompletion(
 
       return { content, url: messagesUrl };
     } catch (error) {
+      if (error instanceof Error) {
+        (error as ErrorWithDiagnostics).attemptedUrl =
+          (error as ErrorWithDiagnostics).attemptedUrl || messagesUrl;
+      }
       lastError = error;
     }
   }
@@ -603,6 +616,37 @@ function isRetryableError(error: unknown): boolean {
   }
 
   return error instanceof Error && (error.name === "AbortError" || error instanceof TypeError);
+}
+
+function getErrorDiagnostics(error: unknown): {
+  message: string;
+  errorName?: string;
+  causeName?: string;
+  causeCode?: string;
+  causeMessage?: string;
+  attemptedUrl?: string;
+} {
+  if (!(error instanceof Error)) {
+    return { message: String(error) };
+  }
+
+  const err = error as ErrorWithDiagnostics;
+  const causeRecord = isRecord(err.cause) ? err.cause : undefined;
+  const causeName =
+    causeRecord && typeof causeRecord.name === "string" ? causeRecord.name : undefined;
+  const causeCode =
+    causeRecord && typeof causeRecord.code === "string" ? causeRecord.code : undefined;
+  const causeMessage =
+    causeRecord && typeof causeRecord.message === "string" ? causeRecord.message : undefined;
+
+  return {
+    message: err.message,
+    errorName: err.name,
+    causeName,
+    causeCode,
+    causeMessage,
+    attemptedUrl: err.attemptedUrl,
+  };
 }
 
 function getRetryDelayMs(attempt: number, retryUntilSuccess: boolean): number {
@@ -739,20 +783,29 @@ export async function runAiChatCompletion(
       }
 
       const chatUrl = `${baseUrl}/chat/completions`;
-      const response = await outboundFetch(chatUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: 0.2,
-          max_tokens: 4096,
-        }),
-      });
+      let response: Response;
+      try {
+        response = await outboundFetch(chatUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.2,
+            max_tokens: 4096,
+          }),
+        });
+      } catch (error) {
+        if (error instanceof Error) {
+          (error as ErrorWithDiagnostics).attemptedUrl =
+            (error as ErrorWithDiagnostics).attemptedUrl || chatUrl;
+        }
+        throw error;
+      }
 
       const contentType = response.headers.get("content-type") || "";
       const looksLikeJson = contentType.toLowerCase().includes("application/json");
@@ -841,13 +894,19 @@ export async function runAiChatCompletion(
       return content;
     } catch (error) {
       const retryable = isRetryableError(error) && (retryUntilSuccess || attempt < maxAttempts);
+      const diagnostics = getErrorDiagnostics(error);
       logger.warn("AI request failed", {
         task: options.task,
         attempt,
         durationMs: Date.now() - startedAt,
         model,
         retryable,
-        message: error instanceof Error ? error.message : String(error),
+        message: diagnostics.message,
+        errorName: diagnostics.errorName,
+        causeName: diagnostics.causeName,
+        causeCode: diagnostics.causeCode,
+        causeMessage: diagnostics.causeMessage,
+        url: diagnostics.attemptedUrl,
       });
 
       if (!retryable) {
