@@ -1,38 +1,31 @@
-const RAPIDAPI_HOST = "twitter241.p.rapidapi.com";
+const XAPI_DEFAULT_ACTION_HOST = "action.xapi.to";
+const XAPI_ACTION_EXECUTE_PATH = "/v1/actions/execute";
+
+type ActionInput = Record<string, unknown>;
+type ReferenceTweetType = "retweeted" | "replied_to" | "quoted";
+
+interface XapiActionResponse {
+  success?: boolean;
+  data?: unknown;
+  error?: unknown;
+  message?: unknown;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function findUserResult(value: unknown): Record<string, unknown> | null {
-  if (!isRecord(value)) return null;
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
 
-  const queue: Record<string, unknown>[] = [value];
-  const visited = new Set<Record<string, unknown>>();
-
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (visited.has(current)) continue;
-    visited.add(current);
-
-    const legacy = current.legacy;
-    const core = current.core;
-    const restId = current.rest_id;
-    if (
-      (isRecord(legacy) && (typeof restId === "string" || typeof legacy.screen_name === "string")) ||
-      (isRecord(core) && typeof core.screen_name === "string")
-    ) {
-      return current;
-    }
-
-    for (const nested of Object.values(current)) {
-      if (isRecord(nested)) {
-        queue.push(nested);
-      }
-    }
+function toNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
   }
-
-  return null;
+  return 0;
 }
 
 function getTopLevelKeys(value: unknown): string[] {
@@ -49,26 +42,88 @@ function getPayloadSnippet(value: unknown, maxLength = 1200): string {
   }
 }
 
-function decodeGraphqlUserId(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0) return "";
+function getXapiActionHost(): string {
+  return process.env.XAPI_ACTION_HOST?.trim() || XAPI_DEFAULT_ACTION_HOST;
+}
 
-  try {
-    const decoded = Buffer.from(value, "base64").toString("utf8");
-    const match = decoded.match(/^User:(\d+)$/);
-    return match?.[1] || "";
-  } catch {
-    return "";
-  }
+function getXapiApiKey(): string {
+  const key = process.env.XAPI_API_KEY?.trim();
+  if (key) return key;
+
+  // Backward compatibility for existing deployments.
+  const legacyKey = process.env.RAPIDAPI_KEY?.trim();
+  if (legacyKey) return legacyKey;
+
+  throw new Error("XAPI_API_KEY not set");
+}
+
+function buildExecuteUrl(): string {
+  const host = getXapiActionHost();
+  const protocol =
+    host.startsWith("localhost") || host.startsWith("127.") ? "http" : "https";
+  return `${protocol}://${host}${XAPI_ACTION_EXECUTE_PATH}`;
 }
 
 function getHeaders(): Record<string, string> {
-  const key = process.env.RAPIDAPI_KEY;
-  if (!key) throw new Error("RAPIDAPI_KEY not set");
   return {
-    "x-rapidapi-key": key,
-    "x-rapidapi-host": RAPIDAPI_HOST,
+    "XAPI-Key": getXapiApiKey(),
     "Content-Type": "application/json",
   };
+}
+
+function getErrorMessageFromPayload(payload: unknown): string {
+  if (typeof payload === "string" && payload.trim()) return payload.trim();
+  if (!isRecord(payload)) return "";
+
+  const fields = ["message", "msg", "error"];
+  for (const field of fields) {
+    const value = payload[field];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+
+  if (isRecord(payload.data)) {
+    for (const field of fields) {
+      const value = payload.data[field];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+  }
+
+  return "";
+}
+
+async function executeXapiAction(actionId: string, input: ActionInput): Promise<unknown> {
+  const url = buildExecuteUrl();
+  const res = await fetch(url, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({
+      action_id: actionId,
+      input,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    console.error("XAPI twitter action request failed", {
+      actionId,
+      status: res.status,
+      bodySnippet: body.length > 1200 ? `${body.slice(0, 1200)}...` : body,
+    });
+    throw new Error(`XAPI Twitter API error ${res.status}: ${body}`);
+  }
+
+  const payload = (await res.json()) as XapiActionResponse;
+  if (payload.success === false) {
+    const message = getErrorMessageFromPayload(payload) || "XAPI action execution failed";
+    console.error("XAPI twitter action execution failed", {
+      actionId,
+      message,
+      payloadSnippet: getPayloadSnippet(payload),
+    });
+    throw new Error(`XAPI Twitter API error: ${message}`);
+  }
+
+  return payload.data;
 }
 
 export interface TwitterUser {
@@ -96,175 +151,104 @@ export interface TwitterTweet {
     quote_count: number;
     impression_count: number;
   };
-  referenced_tweets?: { type: "retweeted" | "replied_to" | "quoted"; id: string }[];
+  referenced_tweets?: { type: ReferenceTweetType; id: string }[];
 }
 
-// --- Helper: extract user from RapidAPI response ---
-function extractUser(result: Record<string, unknown>): TwitterUser {
-  const userResult = findUserResult(result) || result;
-  const legacy = (isRecord(userResult.legacy) ? userResult.legacy : {}) as Record<string, unknown>;
-  const core = (isRecord(userResult.core) ? userResult.core : {}) as Record<string, unknown>;
-  const avatar = (isRecord(userResult.avatar) ? userResult.avatar : {}) as Record<string, unknown>;
-  const restId =
-    (userResult.rest_id as string | undefined) ||
-    (legacy.id_str as string | undefined) ||
-    decodeGraphqlUserId(userResult.id);
+function extractUser(payload: unknown): TwitterUser {
+  const data = isRecord(payload) ? payload : {};
 
+  const avatar = asString(data.avatar).replace("_normal", "_400x400");
   return {
-    id: restId,
-    name: ((legacy.name || core.name || "") as string),
-    username: ((legacy.screen_name || core.screen_name || "") as string),
-    description: (legacy.description || "") as string,
-    profile_image_url: ((legacy.profile_image_url_https || avatar.image_url || "") as string).replace("_normal", "_400x400"),
+    id: asString(data.rest_id),
+    name: asString(data.name),
+    username: asString(data.screen_name),
+    description: asString(data.description),
+    profile_image_url: avatar,
     public_metrics: {
-      followers_count: (legacy.followers_count || 0) as number,
-      following_count: (legacy.friends_count || 0) as number,
-      tweet_count: (legacy.statuses_count || 0) as number,
+      followers_count: toNumber(data.followers_count),
+      following_count: toNumber(data.friends_count),
+      tweet_count: toNumber(data.statuses_count),
     },
-    created_at: ((legacy.created_at || core.created_at || "") as string),
+    created_at: asString(data.created_at),
   };
 }
 
-// --- Helper: extract tweet from RapidAPI response ---
-function extractTweet(entry: Record<string, unknown>): TwitterTweet | null {
-  try {
-    // Navigate nested GraphQL structure
-    const content = entry.content as Record<string, unknown> | undefined;
-    const itemContent = (content?.itemContent || entry.itemContent || entry) as Record<string, unknown>;
-    const tweetResults = (itemContent?.tweet_results || itemContent) as Record<string, unknown>;
-    const result = (tweetResults?.result || tweetResults) as Record<string, unknown>;
-    const legacy = result.legacy as Record<string, unknown>;
+function extractReferencedTweets(tweet: Record<string, unknown>): TwitterTweet["referenced_tweets"] {
+  const referenced: Array<{ type: ReferenceTweetType; id: string }> = [];
 
-    if (!legacy) return null;
-
-    const restId = (result.rest_id || legacy.id_str || "") as string;
-    const fullText = (legacy.full_text || legacy.text || "") as string;
-    const createdAt = (legacy.created_at || "") as string;
-
-    // Views / impressions
-    const views = result.views as Record<string, unknown> | undefined;
-    const impressionCount = parseInt((views?.count || "0") as string, 10) || 0;
-
-    // Detect retweet / reply / quote
-    const retweetedStatus = legacy.retweeted_status_result as Record<string, unknown> | undefined;
-    const inReplyTo = legacy.in_reply_to_status_id_str as string | undefined;
-    const isQuoteStatus = legacy.is_quote_status as boolean | undefined;
-    const quotedStatus = result.quoted_status_result as Record<string, unknown> | undefined;
-
-    const referencedTweets: { type: "retweeted" | "replied_to" | "quoted"; id: string }[] = [];
-    if (retweetedStatus) referencedTweets.push({ type: "retweeted", id: "" });
-    if (inReplyTo) referencedTweets.push({ type: "replied_to", id: inReplyTo });
-    if (isQuoteStatus || quotedStatus) referencedTweets.push({ type: "quoted", id: "" });
-
-    return {
-      id: restId,
-      text: fullText,
-      created_at: createdAt,
-      public_metrics: {
-        like_count: (legacy.favorite_count || 0) as number,
-        retweet_count: (legacy.retweet_count || 0) as number,
-        reply_count: (legacy.reply_count || 0) as number,
-        quote_count: (legacy.quote_count || 0) as number,
-        impression_count: impressionCount,
-      },
-      referenced_tweets: referencedTweets.length > 0 ? referencedTweets : undefined,
-    };
-  } catch {
-    return null;
+  const retweeted = isRecord(tweet.retweeted_tweet) ? tweet.retweeted_tweet : null;
+  if (tweet.is_retweet === true || retweeted) {
+    referenced.push({ type: "retweeted", id: retweeted ? asString(retweeted.id) : "" });
   }
+
+  const inReplyToId = asString(tweet.in_reply_to_status_id);
+  if (inReplyToId) {
+    referenced.push({ type: "replied_to", id: inReplyToId });
+  }
+
+  const quoted = isRecord(tweet.quoted_tweet) ? tweet.quoted_tweet : null;
+  if (tweet.is_quote_status === true || quoted) {
+    referenced.push({ type: "quoted", id: quoted ? asString(quoted.id) : "" });
+  }
+
+  return referenced.length > 0 ? referenced : undefined;
+}
+
+function extractTweet(tweetPayload: unknown): TwitterTweet | null {
+  if (!isRecord(tweetPayload)) return null;
+
+  const id = asString(tweetPayload.id);
+  if (!id) return null;
+
+  return {
+    id,
+    text: asString(tweetPayload.full_text) || asString(tweetPayload.text),
+    created_at: asString(tweetPayload.created_at),
+    public_metrics: {
+      like_count: toNumber(tweetPayload.favorite_count),
+      retweet_count: toNumber(tweetPayload.retweet_count),
+      reply_count: toNumber(tweetPayload.reply_count),
+      quote_count: toNumber(tweetPayload.quote_count),
+      impression_count: toNumber(tweetPayload.views_count),
+    },
+    referenced_tweets: extractReferencedTweets(tweetPayload),
+  };
 }
 
 export async function lookupUser(username: string): Promise<TwitterUser> {
-  const url = `https://${RAPIDAPI_HOST}/user?username=${encodeURIComponent(username)}`;
-  const res = await fetch(url, { headers: getHeaders() });
-  if (!res.ok) {
-    const body = await res.text();
-    console.error("Twitter241 user request failed", {
-      username,
-      status: res.status,
-      bodySnippet: body.length > 1200 ? `${body.slice(0, 1200)}...` : body,
-    });
-    throw new Error(`Twitter241 API error ${res.status}: ${body}`);
-  }
-  const json = await res.json();
-  const user = extractUser(json);
+  const payload = await executeXapiAction("twitter.user_by_screen_name", {
+    screen_name: username,
+  });
+
+  const user = extractUser(payload);
   if (!user.id || !user.username) {
-    console.error("Twitter241 unexpected user payload", {
+    console.error("XAPI unexpected user payload", {
       username,
-      topLevelKeys: getTopLevelKeys(json),
-      payloadSnippet: getPayloadSnippet(json),
+      topLevelKeys: getTopLevelKeys(payload),
+      payloadSnippet: getPayloadSnippet(payload),
     });
-    throw new Error(`Twitter241 user payload missing id/username for @${username}`);
+    throw new Error(`XAPI user payload missing id/username for @${username}`);
   }
+
   return user;
 }
 
-export async function getUserTweets(
-  userId: string,
-  maxResults = 100
-): Promise<TwitterTweet[]> {
+export async function getUserTweets(userId: string, maxResults = 100): Promise<TwitterTweet[]> {
   if (!userId.trim()) {
-    throw new Error("Twitter241 userId is empty");
+    throw new Error("XAPI userId is empty");
   }
 
-  const tweets: TwitterTweet[] = [];
-  let cursor: string | undefined;
+  const count = Math.max(1, Math.min(100, maxResults));
+  const payload = await executeXapiAction("twitter.user_tweets", {
+    user_id: userId,
+    count,
+  });
 
-  while (tweets.length < maxResults) {
-    const count = Math.min(40, maxResults - tweets.length);
-    let url = `https://${RAPIDAPI_HOST}/user-tweets?user=${userId}&count=${count}`;
-    if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
-
-    const res = await fetch(url, { headers: getHeaders() });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Twitter241 API error ${res.status}: ${body}`);
-    }
-    const json = await res.json();
-
-    // Extract entries from timeline
-    const instructions = json.result?.timeline?.instructions
-      || json.data?.user?.result?.timeline_v2?.timeline?.instructions
-      || [];
-
-    let entries: Record<string, unknown>[] = [];
-    for (const inst of instructions) {
-      const i = inst as Record<string, unknown>;
-      if (i.type === "TimelineAddEntries" || i.entries) {
-        entries = (i.entries || []) as Record<string, unknown>[];
-        break;
-      }
-    }
-
-    let newCursor: string | undefined;
-    let addedCount = 0;
-
-    for (const entry of entries) {
-      const entryId = (entry.entryId || "") as string;
-
-      // Cursor entries for pagination
-      if (entryId.startsWith("cursor-bottom")) {
-        const content = entry.content as Record<string, unknown> | undefined;
-        newCursor = (content?.value || "") as string;
-        continue;
-      }
-
-      // Tweet entries
-      if (entryId.startsWith("tweet-")) {
-        const tweet = extractTweet(entry);
-        if (tweet && tweet.id) {
-          tweets.push(tweet);
-          addedCount++;
-        }
-      }
-    }
-
-    cursor = newCursor;
-    if (!cursor || addedCount === 0) break;
-
-    // Rate limit
-    await new Promise((r) => setTimeout(r, 1100));
-  }
+  const data = isRecord(payload) ? payload : {};
+  const tweetsRaw = Array.isArray(data.tweets) ? data.tweets : [];
+  const tweets = tweetsRaw
+    .map((tweet) => extractTweet(tweet))
+    .filter((tweet): tweet is TwitterTweet => tweet !== null);
 
   return tweets.slice(0, maxResults);
 }

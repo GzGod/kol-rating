@@ -1,172 +1,203 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-test("lookupUser extracts rest_id from nested user_results structure", async () => {
-  let mod: {
-    lookupUser: (username: string) => Promise<{ id: string; username: string; name: string }>;
-  };
+test("lookupUser maps xapi twitter.user_by_screen_name response", async () => {
+  const mod = await import("../src/lib/twitter");
 
-  try {
-    mod = await import("../src/lib/twitter");
-  } catch {
-    assert.fail("twitter module missing");
-  }
-
+  const previousXapiKey = process.env.XAPI_API_KEY;
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () =>
-    new Response(
+  process.env.XAPI_API_KEY = "test-key";
+
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.toString();
+    assert.equal(url, "https://action.xapi.to/v1/actions/execute");
+
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("XAPI-Key"), "test-key");
+
+    const body = JSON.parse(String(init?.body ?? "{}")) as {
+      action_id?: string;
+      input?: Record<string, unknown>;
+    };
+    assert.equal(body.action_id, "twitter.user_by_screen_name");
+    assert.equal(body.input?.screen_name, "xuegaogx");
+
+    return new Response(
       JSON.stringify({
+        success: true,
         data: {
-          user: {
-            result: {
-              data: {
-                user_result: {
-                  result: {
-                    rest_id: "12345",
-                    legacy: {
-                      screen_name: "xuegaogx",
-                      name: "Snow Cake",
-                      description: "bio",
-                      profile_image_url_https: "https://pbs.twimg.com/profile_images/test_normal.jpg",
-                      followers_count: 100,
-                      friends_count: 10,
-                      statuses_count: 20,
-                      created_at: "Fri Mar 13 00:00:00 +0000 2026",
-                    },
-                  },
-                },
-              },
-            },
-          },
+          rest_id: "1710490876487815168",
+          screen_name: "Xuegaogx",
+          name: "Snow Cake",
+          description: "bio",
+          avatar: "https://pbs.twimg.com/profile_images/test_normal.jpg",
+          followers_count: 100,
+          friends_count: 10,
+          statuses_count: 20,
+          created_at: "Fri Mar 13 00:00:00 +0000 2026",
         },
       }),
       { status: 200, headers: { "Content-Type": "application/json" } }
     ) as Response;
-
-  process.env.RAPIDAPI_KEY = "test-key";
-
-  try {
-    const user = await mod.lookupUser("xuegaogx");
-    assert.equal(user.id, "12345");
-    assert.equal(user.username, "xuegaogx");
-    assert.equal(user.name, "Snow Cake");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("lookupUser extracts numeric user id from graphql user payload", async () => {
-  let mod: {
-    lookupUser: (username: string) => Promise<{
-      id: string;
-      username: string;
-      name: string;
-      description: string;
-      profile_image_url: string;
-    }>;
   };
-
-  try {
-    mod = await import("../src/lib/twitter");
-  } catch {
-    assert.fail("twitter module missing");
-  }
-
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () =>
-    new Response(
-      JSON.stringify({
-        result: {
-          data: {
-            user: {
-              result: {
-                __typename: "User",
-                id: "VXNlcjoxNzEwNDkwODc2NDg3ODE1MTY4",
-                core: {
-                  created_at: "Sat Oct 07 03:03:07 +0000 2023",
-                  name: "雪糕战神🍦",
-                  screen_name: "Xuegaogx",
-                },
-                avatar: {
-                  image_url: "https://pbs.twimg.com/profile_images/2005277769236889600/YdJuH3Ng_normal.jpg",
-                },
-                legacy: {
-                  description: "现在是芒果味雪糕",
-                  followers_count: 1234,
-                  friends_count: 321,
-                  statuses_count: 88,
-                },
-              },
-            },
-          },
-        },
-      }),
-      { status: 200, headers: { "Content-Type": "application/json" } }
-    ) as Response;
-
-  process.env.RAPIDAPI_KEY = "test-key";
 
   try {
     const user = await mod.lookupUser("xuegaogx");
     assert.equal(user.id, "1710490876487815168");
     assert.equal(user.username, "Xuegaogx");
-    assert.equal(user.name, "雪糕战神🍦");
-    assert.equal(user.description, "现在是芒果味雪糕");
+    assert.equal(user.name, "Snow Cake");
     assert.equal(
       user.profile_image_url,
-      "https://pbs.twimg.com/profile_images/2005277769236889600/YdJuH3Ng_400x400.jpg"
+      "https://pbs.twimg.com/profile_images/test_400x400.jpg"
     );
   } finally {
     globalThis.fetch = originalFetch;
+    if (previousXapiKey === undefined) {
+      delete process.env.XAPI_API_KEY;
+    } else {
+      process.env.XAPI_API_KEY = previousXapiKey;
+    }
   }
 });
 
-test("lookupUser logs payload summary when twitter241 returns unusable user data", async () => {
-  let mod: {
-    lookupUser: (username: string) => Promise<{ id: string; username: string; name: string }>;
-  };
+test("lookupUser logs payload summary when xapi returns unusable user data", async () => {
+  const mod = await import("../src/lib/twitter");
 
-  try {
-    mod = await import("../src/lib/twitter");
-  } catch {
-    assert.fail("twitter module missing");
-  }
-
+  const previousXapiKey = process.env.XAPI_API_KEY;
   const originalFetch = globalThis.fetch;
   const originalConsoleError = console.error;
   const errorCalls: unknown[][] = [];
+  process.env.XAPI_API_KEY = "test-key";
 
   globalThis.fetch = async () =>
     new Response(
       JSON.stringify({
-        user: {
-          result: {
-            note: "unexpected shape",
-          },
+        success: true,
+        data: {
+          note: "unexpected shape",
         },
       }),
       { status: 200, headers: { "Content-Type": "application/json" } }
     ) as Response;
+
   console.error = (...args: unknown[]) => {
     errorCalls.push(args);
   };
 
-  process.env.RAPIDAPI_KEY = "test-key";
-
   try {
     await assert.rejects(
       () => mod.lookupUser("xuegaogx"),
-      /Twitter241 user payload missing id\/username for @xuegaogx/
+      /XAPI user payload missing id\/username for @xuegaogx/
     );
     assert.equal(errorCalls.length, 1);
-    assert.equal(errorCalls[0][0], "Twitter241 unexpected user payload");
+    assert.equal(errorCalls[0][0], "XAPI unexpected user payload");
     assert.deepEqual(errorCalls[0][1], {
       username: "xuegaogx",
-      topLevelKeys: ["user"],
-      payloadSnippet: '{"user":{"result":{"note":"unexpected shape"}}}',
+      topLevelKeys: ["note"],
+      payloadSnippet: '{"note":"unexpected shape"}',
     });
   } finally {
     globalThis.fetch = originalFetch;
     console.error = originalConsoleError;
+    if (previousXapiKey === undefined) {
+      delete process.env.XAPI_API_KEY;
+    } else {
+      process.env.XAPI_API_KEY = previousXapiKey;
+    }
+  }
+});
+
+test("getUserTweets maps xapi twitter.user_tweets response", async () => {
+  const mod = await import("../src/lib/twitter");
+
+  const previousXapiKey = process.env.XAPI_API_KEY;
+  const originalFetch = globalThis.fetch;
+  process.env.XAPI_API_KEY = "test-key";
+
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as {
+      action_id?: string;
+      input?: Record<string, unknown>;
+    };
+    assert.equal(body.action_id, "twitter.user_tweets");
+    assert.equal(body.input?.user_id, "1710490876487815168");
+    assert.equal(body.input?.count, 2);
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          tweets: [
+            {
+              id: "tweet-1",
+              full_text: "hello world",
+              created_at: "Fri Mar 13 00:00:00 +0000 2026",
+              favorite_count: 11,
+              retweet_count: 2,
+              reply_count: 3,
+              quote_count: 4,
+              views_count: 999,
+              is_quote_status: true,
+              quoted_tweet: { id: "quoted-1" },
+            },
+            {
+              id: "tweet-2",
+              full_text: "retweet sample",
+              created_at: "Fri Mar 12 00:00:00 +0000 2026",
+              favorite_count: 0,
+              retweet_count: 0,
+              reply_count: 0,
+              quote_count: 0,
+              views_count: 12,
+              is_retweet: true,
+              retweeted_tweet: { id: "retweet-1" },
+              in_reply_to_status_id: "reply-1",
+            },
+          ],
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    ) as Response;
+  };
+
+  try {
+    const tweets = await mod.getUserTweets("1710490876487815168", 2);
+    assert.equal(tweets.length, 2);
+    assert.deepEqual(tweets[0], {
+      id: "tweet-1",
+      text: "hello world",
+      created_at: "Fri Mar 13 00:00:00 +0000 2026",
+      public_metrics: {
+        like_count: 11,
+        retweet_count: 2,
+        reply_count: 3,
+        quote_count: 4,
+        impression_count: 999,
+      },
+      referenced_tweets: [{ type: "quoted", id: "quoted-1" }],
+    });
+    assert.deepEqual(tweets[1], {
+      id: "tweet-2",
+      text: "retweet sample",
+      created_at: "Fri Mar 12 00:00:00 +0000 2026",
+      public_metrics: {
+        like_count: 0,
+        retweet_count: 0,
+        reply_count: 0,
+        quote_count: 0,
+        impression_count: 12,
+      },
+      referenced_tweets: [
+        { type: "retweeted", id: "retweet-1" },
+        { type: "replied_to", id: "reply-1" },
+      ],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousXapiKey === undefined) {
+      delete process.env.XAPI_API_KEY;
+    } else {
+      process.env.XAPI_API_KEY = previousXapiKey;
+    }
   }
 });

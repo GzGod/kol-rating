@@ -25,7 +25,7 @@ const STYLE_TAGS = [
   "Community_Builder",
 ] as const;
 
-const DEFAULT_AI_BASE = "https://max.openai365.top/v1";
+const DEFAULT_AI_BASE = "https://www.ai-openclaw.one/v1";
 const DEFAULT_AI_MODEL = "claude-sonnet-4-6";
 const DEFAULT_TIMEOUT_MS = {
   track: 15_000,
@@ -508,6 +508,10 @@ function resolveAiProtocol(baseUrl: string, model: string): AiProtocol {
     hostname = new URL(baseUrl).hostname.toLowerCase();
   } catch {
     hostname = "";
+  }
+
+  if (hostname === "ai-openclaw.one" || hostname === "www.ai-openclaw.one") {
+    return "messages";
   }
 
   if (hostname === "code.aipor.cc") {

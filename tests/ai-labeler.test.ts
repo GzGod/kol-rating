@@ -738,8 +738,10 @@ test("labelTweetTracks skips remaining remote batches once service is unavailabl
   const originalFetch = globalThis.fetch;
   const previousApiKey = process.env.AI_API_KEY;
   const previousTrackAttempts = process.env.AI_TRACK_MAX_ATTEMPTS;
+  const previousProtocol = process.env.AI_PROTOCOL;
   process.env.AI_API_KEY = "test-key";
   process.env.AI_TRACK_MAX_ATTEMPTS = "1";
+  process.env.AI_PROTOCOL = "chat";
   let fetchCalls = 0;
 
   globalThis.fetch = (async () => {
@@ -775,6 +777,11 @@ test("labelTweetTracks skips remaining remote batches once service is unavailabl
       delete process.env.AI_TRACK_MAX_ATTEMPTS;
     } else {
       process.env.AI_TRACK_MAX_ATTEMPTS = previousTrackAttempts;
+    }
+    if (previousProtocol === undefined) {
+      delete process.env.AI_PROTOCOL;
+    } else {
+      process.env.AI_PROTOCOL = previousProtocol;
     }
     mod.__resetAiUnavailableCooldownForTests();
   }
