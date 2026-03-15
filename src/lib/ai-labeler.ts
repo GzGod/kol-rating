@@ -190,7 +190,10 @@ function markAiUnavailable(now = Date.now()): void {
 
 function isAiServiceUnavailableError(error: unknown): boolean {
   if (error instanceof AiRequestError) {
-    return error.status === 503;
+    const message = error.message.toLowerCase();
+    const isModelNotFound =
+      message.includes("model_not_found") || message.includes("no available channel for model");
+    return error.status === 503 && !isModelNotFound;
   }
 
   if (!(error instanceof Error)) return false;
@@ -612,6 +615,11 @@ function getAiConfig(task: AiTask, options: AiCompletionOptions, deps: AiComplet
 
 function isRetryableError(error: unknown): boolean {
   if (error instanceof AiRequestError) {
+    const message = error.message.toLowerCase();
+    const isModelNotFound =
+      message.includes("model_not_found") || message.includes("no available channel for model");
+    if (isModelNotFound) return false;
+
     return error.status === 408 || error.status === 409 || error.status === 429 || (error.status ?? 0) >= 500;
   }
 

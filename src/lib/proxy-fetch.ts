@@ -116,6 +116,25 @@ function buildRequestInitWithProxy(init: RequestInit, proxyUrl: string): Request
   };
 }
 
+async function shouldRetryStatusForService(service: ProxyService, response: Response): Promise<boolean> {
+  if (service !== "ai") return true;
+  if (response.status !== 503) return true;
+
+  const contentType = (response.headers.get("content-type") || "").toLowerCase();
+  if (!contentType.includes("application/json")) return true;
+
+  try {
+    const body = (await response.text()).toLowerCase();
+    if (body.includes("model_not_found") || body.includes("no available channel for model")) {
+      return false;
+    }
+  } catch {
+    return true;
+  }
+
+  return true;
+}
+
 export async function fetchWithServiceProxy(
   service: ProxyService,
   input: RequestInfo | URL,
@@ -176,6 +195,16 @@ export async function fetchWithServiceProxy(
       }
 
       if (!retryableStatuses.has(response.status) || isLastProxy) {
+        return response;
+      }
+
+      const shouldRetry = await shouldRetryStatusForService(service, response.clone());
+      if (!shouldRetry) {
+        logger.warn("Outbound request got non-retryable status payload, skipping proxy failover", {
+          service,
+          proxy: proxyForLog,
+          status: response.status,
+        });
         return response;
       }
 

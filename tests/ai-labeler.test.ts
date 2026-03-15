@@ -632,6 +632,64 @@ test("runAiChatCompletion retries 503 responses and eventually succeeds", async 
   assert.equal(attempts, 3);
 });
 
+test("runAiChatCompletion does not retry model_not_found responses", async () => {
+  let mod: {
+    runAiChatCompletion: (
+      messages: Array<{ role: string; content: string }>,
+      options: {
+        task: "track" | "style";
+        timeoutMs?: number;
+        maxAttempts?: number;
+      },
+      deps?: {
+        fetchImpl?: typeof fetch;
+        sleep?: (ms: number) => Promise<void>;
+        baseUrl?: string;
+        apiKey?: string;
+        model?: string;
+      }
+    ) => Promise<string>;
+  };
+
+  try {
+    mod = await import("../src/lib/ai-labeler");
+  } catch {
+    assert.fail("ai-labeler module missing");
+  }
+
+  let attempts = 0;
+  await assert.rejects(
+    mod.runAiChatCompletion(
+      [{ role: "user", content: "hello" }],
+      { task: "track", maxAttempts: 4 },
+      {
+        baseUrl: "https://www.ai-openclaw.one/v1",
+        apiKey: "test-key",
+        model: "claude-opus-4-6",
+        sleep: async () => {},
+        fetchImpl: async () => {
+          attempts++;
+          return new Response(
+            JSON.stringify({
+              error: {
+                code: "model_not_found",
+                message: "No available channel for model claude-opus-4-6",
+              },
+            }),
+            {
+              status: 503,
+              headers: { "Content-Type": "application/json" },
+            }
+          );
+        },
+      }
+    ),
+    /model_not_found/
+  );
+
+  assert.equal(attempts, 1);
+});
+
 test("runAiChatCompletion can keep retrying when retryUntilSuccess is enabled", async () => {
   let mod: {
     runAiChatCompletion: (
