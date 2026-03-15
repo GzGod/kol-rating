@@ -274,6 +274,47 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+function getBodySnippet(body: string, maxLength = 240): string {
+  const trimmed = body.trim();
+  if (!trimmed) return "";
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}...` : trimmed;
+}
+
+function looksLikeHtmlBody(body: string): boolean {
+  const normalized = body.trim().toLowerCase();
+  return (
+    normalized.startsWith("<!doctype html") ||
+    normalized.startsWith("<html") ||
+    normalized.includes("<head") ||
+    normalized.includes("<body")
+  );
+}
+
+async function parseJsonResponseBody(
+  response: Response,
+  context: string
+): Promise<unknown> {
+  const contentType = (response.headers.get("content-type") || "").toLowerCase();
+  const body = await response.text();
+  const hasJsonContentType = contentType.includes("application/json");
+
+  if (!hasJsonContentType || looksLikeHtmlBody(body)) {
+    throw new AiRequestError(
+      `AI API error 502: ${context} returned non-JSON payload (${contentType || "unknown"}): ${getBodySnippet(body)}`,
+      502
+    );
+  }
+
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    throw new AiRequestError(
+      `AI API error 502: ${context} returned invalid JSON (${contentType || "unknown"}): ${getBodySnippet(body)}`,
+      502
+    );
+  }
+}
+
 function buildResponsesUrls(baseUrl: string): string[] {
   const normalizedBase = trimTrailingSlash(baseUrl);
   const urls: string[] = [`${normalizedBase}/responses`];
@@ -411,7 +452,7 @@ async function runResponsesCompletion(
         );
       }
 
-      const responsesPayload = (await responsesResponse.json()) as unknown;
+      const responsesPayload = await parseJsonResponseBody(responsesResponse, responsesUrl);
       const responsesContent = extractResponsesOutputText(responsesPayload);
       if (!responsesContent) {
         throw new Error("AI response missing message content");
@@ -465,7 +506,7 @@ async function runMessagesCompletion(
         );
       }
 
-      const messagesPayload = (await messagesResponse.json()) as unknown;
+      const messagesPayload = await parseJsonResponseBody(messagesResponse, messagesUrl);
       const content = extractMessagesOutputText(messagesPayload);
       if (!content) {
         throw new Error("AI response missing message content");
