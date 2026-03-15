@@ -131,6 +131,36 @@ function parseBoolean(raw: string | undefined): boolean | undefined {
   return undefined;
 }
 
+function getAiResponseLogEnabled(): boolean {
+  return parseBoolean(process.env.AI_LOG_RESPONSE) ?? false;
+}
+
+function getAiResponseLogMaxChars(): number {
+  return parsePositiveInt(process.env.AI_LOG_RESPONSE_MAX_CHARS) || 4000;
+}
+
+function maybeLogAiResponse(
+  logger: Pick<Console, "info" | "warn" | "error">,
+  context: { task: AiTask; attempt: number; model: string; protocol: AiProtocol; content: string }
+): void {
+  if (!getAiResponseLogEnabled()) return;
+
+  const maxChars = getAiResponseLogMaxChars();
+  const isTruncated = context.content.length > maxChars;
+  const contentSnippet = isTruncated
+    ? `${context.content.slice(0, maxChars)}...[truncated ${context.content.length - maxChars} chars]`
+    : context.content;
+
+  logger.info("AI response content", {
+    task: context.task,
+    attempt: context.attempt,
+    model: context.model,
+    protocol: context.protocol,
+    contentSnippet,
+    contentLength: context.content.length,
+  });
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -581,6 +611,13 @@ export async function runAiChatCompletion(
           protocol: "messages",
           url: completion.url,
         });
+        maybeLogAiResponse(logger, {
+          task: options.task,
+          attempt,
+          model,
+          protocol: "messages",
+          content: completion.content,
+        });
         return completion.content;
       }
 
@@ -601,6 +638,13 @@ export async function runAiChatCompletion(
           model,
           protocol: "responses",
           url: fallback.url,
+        });
+        maybeLogAiResponse(logger, {
+          task: options.task,
+          attempt,
+          model,
+          protocol: "responses",
+          content: fallback.content,
         });
         return fallback.content;
       }
@@ -670,6 +714,13 @@ export async function runAiChatCompletion(
             protocol: "responses",
             url: fallback.url,
           });
+          maybeLogAiResponse(logger, {
+            task: options.task,
+            attempt,
+            model,
+            protocol: "responses",
+            content: fallback.content,
+          });
           return fallback.content;
         }
 
@@ -690,6 +741,13 @@ export async function runAiChatCompletion(
         durationMs: Date.now() - startedAt,
         model,
         protocol: "chat",
+      });
+      maybeLogAiResponse(logger, {
+        task: options.task,
+        attempt,
+        model,
+        protocol: "chat",
+        content,
       });
       return content;
     } catch (error) {
